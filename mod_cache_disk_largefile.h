@@ -1,0 +1,207 @@
+/* Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef MOD_DISK_CACHE_H
+#define MOD_DISK_CACHE_H
+
+/*
+ * include for mod_disk_cache: Disk Based HTTP 1.1 Cache.
+ */
+
+#define VARY_FORMAT_VERSION 3
+#define DISK_FORMAT_VERSION_OLD 4
+#define DISK_FORMAT_VERSION_OLD2 5
+#define DISK_FORMAT_VERSION_OLD3 7
+#define DISK_FORMAT_VERSION 8
+
+#define CACHE_HEADER_SUFFIX ".header"
+#define CACHE_BODY_SUFFIX   ".body"
+#define CACHE_VDIR_SUFFIX   ".vary"
+
+/* Size of buffer used when copying files */
+#define CACHE_BUF_SIZE 262144
+
+/* How much the file on disk must have grown beyond the current offset
+   before diskcache_bucket_read breaks out of the stat/sleep-loop */
+#define CACHE_BUCKET_MINCHUNK 524288
+
+/* How long to sleep before retrying while looping (micro-seconds) */
+#define CACHE_LOOP_MINSLEEP 10000
+#define CACHE_LOOP_MAXSLEEP 1000000
+
+#define AP_TEMPFILE_PREFIX "/"
+#define AP_TEMPFILE_BASE   "aptmp"
+#define AP_TEMPFILE_SUFFIX "XXXXXX"
+#define AP_TEMPFILE_BASELEN strlen(AP_TEMPFILE_BASE)
+#define AP_TEMPFILE_NAMELEN strlen(AP_TEMPFILE_BASE AP_TEMPFILE_SUFFIX)
+#define AP_TEMPFILE AP_TEMPFILE_PREFIX AP_TEMPFILE_BASE AP_TEMPFILE_SUFFIX
+
+typedef apr_uint32_t disk_cache_format_t;
+
+typedef struct {
+    /* The HTTP status code returned for this response.  */
+    apr_int32_t status;
+    /* The number of times we've cached this entity. */
+    apr_uint32_t entity_version;
+    /* Miscellaneous time values. */
+    apr_time_t date;
+    apr_time_t expire;
+    apr_time_t request_time;
+    apr_time_t response_time;
+    apr_time_t lastmod; /* Last-Modified (if present) */
+
+    /* The body size forced to 64bit to not break when people go from non-LFS
+     * to LFS builds */
+    apr_int64_t file_size;
+
+    /* The size of the entity name that follows. */
+    apr_uint32_t name_len;
+    /* The size of the body cache filename */
+    apr_uint32_t bodyname_len;
+    /* The size of the filename that follows, to fill in r->filename */
+    apr_uint32_t filename_len;
+
+    /* On disk:
+       * name_len long string of entity name.
+       * bodyname_len long string of body cache filename (without cacheroot).
+       * filename_len long string of filename
+     */
+} disk_cache_info_t;
+
+
+/* Don't expose module-related stuff unless needed */
+#ifdef AP_FILTER_H
+/*
+ * disk_cache_object_t
+ * Pointed to by cache_object_t::vobj
+ */
+typedef struct disk_cache_object {
+    const char *root;        /* the location of the cache directory */
+    apr_size_t root_len;
+
+    /* Temporary file */
+    apr_file_t *tfd;
+    char *tempfile;
+
+    /* Header cache file */
+    apr_file_t *hfd;
+    const char *hdrsfile;
+
+    /* Body cache file */
+    apr_file_t *bfd;
+    const char *bodyfile;
+
+    const char *name;           /* Requested URI without vary bits - 
+                                   suitable for mortals. */
+    const char *prefix;         /* Prefix to deal with Vary headers */
+    char *filename;             /* Filename of requested URL (if present) */
+    char **rfilename;           /* Pointer to r->filename */
+
+    apr_off_t initial_size;      /* Size of body as reported upstreams */
+    apr_off_t file_size;         /* File size of the cached body */
+
+    apr_time_t lastmod;          /* Last-Modified (if present) */
+
+    int skipstore;              /* Set if we should skip storing stuff */
+
+    int removedirs;             /* Set it we should rmdir when doing rm */
+
+    int header_only;            /* Copy of r->header_only */
+
+    apr_interval_time_t updtimeout; /* Cache update timeout */
+
+    disk_cache_info_t disk_info; /* Disk header information. */
+
+    apr_off_t bytes_sent; /* Copy of r->bytes_sent before calling recall_body */
+} disk_cache_object_t;
+
+
+/*
+ * mod_disk_cache configuration
+ */
+/* TODO: Make defaults OS specific */
+#define CACHEFILE_LEN 20        /* must be less than HASH_LEN/2 */
+#define DEFAULT_DIRLEVELS 3
+#define DEFAULT_DIRLENGTH 2
+#define DEFAULT_MIN_FILE_SIZE 1
+#define DEFAULT_MAX_FILE_SIZE 1000000
+/* Background caching disabled by default */
+#define DEFAULT_MIN_BACKGROUND_SIZE DEFAULT_MAX_FILE_SIZE
+#define DEFAULT_UPDATE_TIMEOUT apr_time_from_sec(10)
+
+typedef struct {
+    const char* cache_root;
+    apr_size_t cache_root_len;
+    int dirlevels;               /* Number of levels of subdirectories */
+    int dirlength;               /* Length of subdirectory names */
+    apr_off_t minfs;             /* minumum file size for cached files */
+    apr_off_t maxfs;             /* maximum file size for cached files */
+    apr_off_t minbgsize;         /* minimum file size to do bg caching */
+    apr_interval_time_t updtimeout;   /* Cache update timeout */
+    int removedirs;              /* Should we try to remove directories? */
+} disk_cache_conf;
+
+typedef struct diskcache_bucket_data diskcache_bucket_data;
+struct diskcache_bucket_data {
+    /** Number of buckets using this memory */
+    apr_bucket_refcount  refcount;
+    apr_file_t  *fd;
+    /** The pool into which any needed structures should
+     *  be created while reading from this file bucket */
+    apr_pool_t *readpool;
+    /* Cache update timeout */
+    apr_interval_time_t updtimeout;
+    /* Adaptive loop delay timeout */
+    apr_interval_time_t polldelay;
+};
+
+/* Stuff needed by the background copy thread */
+typedef struct copyinfo copyinfo;
+struct copyinfo {
+    apr_off_t len;
+    /* Source info */
+    const char *srcfile;
+    apr_finfo_t srcinfo;
+    apr_off_t srcoff;
+    /* Destination info */
+    const char *destfile;
+    apr_off_t destoff;
+
+    /* Cache update timeout */
+    apr_interval_time_t updtimeout;
+
+    /* Our private pool */
+    apr_pool_t *pool;
+
+#if APR_HAS_THREADS
+    /* Background process info */
+    apr_thread_t *t;
+#endif /* APR_HAS_THREADS */
+#if APR_HAS_FORK
+    apr_proc_t *proc;
+#endif /* APR_HAS_FORK */
+
+    /* For logging */
+    const server_rec *s;
+};
+
+#define CACHE_ENODATA (APR_OS_START_USERERR+1)
+#define CACHE_EDECLINED (APR_OS_START_USERERR+2)
+#define CACHE_EEXIST (APR_OS_START_USERERR+3)
+
+#endif /* AP_FILTER_H */
+
+#endif /*MOD_DISK_CACHE_H*/
