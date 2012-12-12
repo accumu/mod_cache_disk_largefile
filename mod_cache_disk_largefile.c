@@ -419,7 +419,9 @@ static apr_status_t safe_file_rename(const char *src, const char *dest,
         int i;
 
         for (i = 0; i < 2 && rv != APR_SUCCESS; i++) {
-            mkdir_structure(dest, pool);
+            rv = mkdir_structure(conf, dest, pool);
+            if (rv != APR_SUCCESS)
+                continue;
 
             rv = apr_file_rename(src, dest, pool);
 
