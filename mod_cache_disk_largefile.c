@@ -961,8 +961,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
     /* When we are in the quick handler we don't have the per-directory
      * configuration, so this check only takes the global setting of
      * the EnableSendFile directive into account.  */
-    flags |= ((pdconf->enable_sendfile == ENABLE_SENDFILE_OFF)
-             ? 0 : APR_SENDFILE_ENABLED);
+    flags |= AP_SENDFILE_ENABLED(pdconf->enable_sendfile);
 #endif  
 
     if(dobj->bodyfile == NULL || strlen(dobj->bodyfile) == 0) {
