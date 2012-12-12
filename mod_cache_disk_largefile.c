@@ -1858,23 +1858,7 @@ static apr_status_t store_disk_header(disk_cache_object_t *dobj,
     if (r->headers_out) {
         apr_table_t *headers_out;
 
-        headers_out = apr_table_overlay(r->pool, r->headers_out,
-                                        r->err_headers_out);
-        headers_out = ap_cache_cacheable_hdrs_out(r->pool, headers_out,
-                                                  r->server);
-
-        if (!apr_table_get(headers_out, "Content-Type")
-            && r->content_type) {
-            apr_table_setn(headers_out, "Content-Type",
-                           ap_make_content_type(r, r->content_type));
-        }
-
-        if (!apr_table_get(headers_out, "Content-Encoding")
-                && r->content_encoding) 
-        {
-            apr_table_setn(headers_out, "Content-Encoding",
-                           r->content_encoding);
-        }
+        headers_out = ap_cache_cacheable_headers_out(r);
 
         rv = store_table(dobj->hfd, headers_out, r);
         if (rv != APR_SUCCESS) {
@@ -1888,8 +1872,8 @@ static apr_status_t store_disk_header(disk_cache_object_t *dobj,
     if (r->headers_in) {
         apr_table_t *headers_in;
 
-        headers_in = ap_cache_cacheable_hdrs_out(r->pool, r->headers_in,
-                                                 r->server);
+        headers_in = ap_cache_cacheable_headers_in(r);
+
         rv = store_table(dobj->hfd, headers_in, r);
         if (rv != APR_SUCCESS) {
             file_cache_errorcleanup(dobj, r);
