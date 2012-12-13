@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#ifndef MOD_DISK_CACHE_H
-#define MOD_DISK_CACHE_H
+#ifndef MOD_CACHE_DISK_LARGEFILE_H
+#define MOD_CACHE_DISK_LARGEFILE_H
 
 #include "mod_cache.h"
 #include "apr_file_io.h"
 
 /*
- * include for mod_disk_cache: Disk Based HTTP 1.1 Cache.
+ * include for mod_cache_disk_largefile: Disk Based HTTP 1.1 Cache.
  */
 
 #define VARY_FORMAT_VERSION 3
@@ -136,7 +136,7 @@ typedef struct disk_cache_object {
 
 
 /*
- * mod_disk_cache configuration
+ * mod_cache_disk_largefile configuration
  */
 /* TODO: Make defaults OS specific */
 #define CACHEFILE_LEN 20        /* must be less than HASH_LEN/2 */
@@ -210,4 +210,4 @@ struct copyinfo {
 
 #endif /* AP_FILTER_H */
 
-#endif /*MOD_DISK_CACHE_H*/
+#endif /*MOD_CACHE_DISK_LARGEFILE_H*/
