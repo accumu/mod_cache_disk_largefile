@@ -448,7 +448,7 @@ static void close_and_rm(apr_file_t *fd, const char *file, request_rec *r)
     apr_file_close(fd);
     if(flags & APR_FOPEN_WRITE) {
         apr_file_remove(file, r->pool);
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: close_and_rm: Removed %s",
                      file);
     }
@@ -569,7 +569,7 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
 
     /* we don't support caching of range requests (yet) */
     if (r->status == HTTP_PARTIAL_CONTENT) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: URL %s partial content response not cached",
                      key);
         return DECLINED;
@@ -577,14 +577,14 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
 
     /* Note, len is -1 if unknown so don't trust it too hard */
     if (len > conf->maxfs) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: URL %s failed the size check "
                      "(%" APR_OFF_T_FMT " > %" APR_OFF_T_FMT ")",
                      key, len, conf->maxfs);
         return DECLINED;
     }
     if (len >= 0 && len < conf->minfs) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: URL %s failed the size check "
                      "(%" APR_OFF_T_FMT " < %" APR_OFF_T_FMT ")",
                      key, len, conf->minfs);
@@ -631,7 +631,7 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
         dobj->bodyfile = cache_file(r->pool, conf, NULL, str, 
                                     CACHE_BODY_SUFFIX);
         dobj->filename = r->filename;
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: File %s was hashed using %s into %s",
                      r->filename, str, dobj->bodyfile);
     }
@@ -722,7 +722,7 @@ static apr_status_t open_header(cache_handle_t *h, request_rec *r,
         varray = apr_array_make(r->pool, 5, sizeof(char*));
         rc = read_array(r, varray, dobj->hfd);
         if (rc != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rc, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, rc, r,
                          "disk_cache: Cannot parse vary header file: %s",
                          dobj->hdrsfile);
             return CACHE_EDECLINED;
@@ -755,7 +755,7 @@ static apr_status_t open_header(cache_handle_t *h, request_rec *r,
     }
 
     if(format != DISK_FORMAT_VERSION) {
-        ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                      "disk_cache: File '%s' had a version mismatch. File had "
                      "version: %d (current is %d). Deleted.", dobj->hdrsfile,
                      format, DISK_FORMAT_VERSION);
@@ -800,7 +800,7 @@ static apr_status_t open_header_timeout(cache_handle_t *h, request_rec *r,
         rc = open_header(h, r, key, conf);
         if(rc != APR_SUCCESS && rc != CACHE_ENODATA) {
             if(rc != CACHE_EDECLINED) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rc, r->server,
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, rc, r,
                              "disk_cache: Cannot load header file: %s",
                              dobj->hdrsfile);
             }
@@ -819,7 +819,7 @@ static apr_status_t open_header_timeout(cache_handle_t *h, request_rec *r,
             return rc;
         }
         if(finfo.mtime < (apr_time_now() - dobj->updtimeout)) {
-            ap_log_error(APLOG_MARK, APLOG_WARNING, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
                          "disk_cache: Timed out waiting for header file %s for "
                          "URL %s - caching the body failed?", 
                          dobj->hdrsfile, key);
@@ -844,7 +844,7 @@ static apr_status_t load_header_strings(request_rec *r,
             dobj->disk_info.bodyname_len > MAX_STRING_LEN ||
             dobj->disk_info.filename_len > MAX_STRING_LEN) 
     {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                 "disk_cache: Corrupt cache header for URL %s, deleting: %s",
                 dobj->name, dobj->hdrsfile);
         file_cache_errorcleanup(dobj, r);
@@ -863,13 +863,13 @@ static apr_status_t load_header_strings(request_rec *r,
 
     rc = file_read_timeout(dobj->hfd, urlbuff, len, dobj->updtimeout);
     if (rc == APR_ETIMEDOUT) {
-        ap_log_error(APLOG_MARK, APLOG_WARNING, rc, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                      "disk_cache: Timed out waiting for urlbuff for "
                      "URL %s - caching failed?",  dobj->name);
         return CACHE_EDECLINED;
     }
     else if(rc != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_WARNING, rc, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                      "disk_cache: Error reading urlbuff for URL %s",
                      dobj->name);
         return CACHE_EDECLINED;
@@ -878,7 +878,7 @@ static apr_status_t load_header_strings(request_rec *r,
 
     /* check that we have the same URL */
     if (strcmp(urlbuff, dobj->name) != 0) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                      "disk_cache: Cached URL %s didn't match requested "
                      "URL %s", urlbuff, dobj->name);
         file_cache_errorcleanup(dobj, r);
@@ -898,13 +898,13 @@ static apr_status_t load_header_strings(request_rec *r,
 
         rc = file_read_timeout(dobj->hfd, bodyfile, len, dobj->updtimeout);
         if (rc == APR_ETIMEDOUT) {
-            ap_log_error(APLOG_MARK, APLOG_WARNING, rc, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "disk_cache: Timed out waiting for body cache "
                          "filename for URL %s - caching failed?", dobj->name);
             return CACHE_EDECLINED;
         }
         else if(rc != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_WARNING, rc, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "disk_cache: Error reading body cache filename for "
                          "URL %s", dobj->name);
             return CACHE_EDECLINED;
@@ -924,13 +924,13 @@ static apr_status_t load_header_strings(request_rec *r,
 
         rc = file_read_timeout(dobj->hfd, fnamebuf, len, dobj->updtimeout);
         if (rc == APR_ETIMEDOUT) {
-            ap_log_error(APLOG_MARK, APLOG_WARNING, rc, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "disk_cache: Timed out waiting for filename for "
                          "URL %s - caching failed?", dobj->name);
             return CACHE_EDECLINED;
         }
         else if(rc != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_WARNING, rc, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "disk_cache: Error reading filename for URL %s",
                          dobj->name);
             return CACHE_EDECLINED;
@@ -970,7 +970,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
 #endif  
 
     if(dobj->bodyfile == NULL || strlen(dobj->bodyfile) == 0) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                      "disk_cache: open_body_timeout called with NULL "
                      "bodyfile for URL %s",
                      dobj->name);
@@ -987,7 +987,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
                 if(info->response_time < (apr_time_now() - dobj->updtimeout) ) {
                     /* This usually means that the body simply wasn't cached,
                        due to HEAD requests for example */
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, r->server,
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
                                  "disk_cache: Timed out waiting for bodyfile "
                                  "%s for URL %s - caching failed?", 
                                  dobj->bodyfile, dobj->name);
@@ -1046,7 +1046,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
          */
 
         if(dobj->initial_size < dobj->file_size) {
-            ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                          "disk_cache: Cached body for too large for URL %s"
                          " - revalidating.", dobj->name);
             apr_file_remove(dobj->hdrsfile, r->pool);
@@ -1055,7 +1055,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
         else if(dobj->initial_size > dobj->file_size) {
             /* Still caching or failed? */
             if(finfo.mtime < (apr_time_now() - dobj->updtimeout) ) {
-                ap_log_error(APLOG_MARK, APLOG_INFO, rc, r->server,
+                ap_log_rerror(APLOG_MARK, APLOG_INFO, rc, r,
                              "disk_cache: Cached body too small for URL %s"
                              " - revalidating.", dobj->name);
                 apr_file_remove(dobj->hdrsfile, r->pool);
@@ -1074,7 +1074,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
                     (finfo.mtime != finfo.ctime || 
                      finfo.mtime < (apr_time_now() - dobj->updtimeout)) ) 
             {
-                ap_log_error(APLOG_MARK, APLOG_INFO, rc, r->server,
+                ap_log_rerror(APLOG_MARK, APLOG_INFO, rc, r,
                              "disk_cache: Cached body Last-Modified mismatch "
                              "for URL %s - revalidating.", dobj->name);
                 apr_file_remove(dobj->hdrsfile, r->pool);
@@ -1108,7 +1108,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     if (conf->cache_root == NULL) {
         if (!error_logged) {
             error_logged = 1;
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                          "disk_cache: Cannot cache files to disk without a "
                          "CacheRoot specified.");
         }
@@ -1183,7 +1183,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
         dobj->file_size = 0;
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                  "disk_cache: Recalled status for cached URL %s from file %s",
                  dobj->name, dobj->hdrsfile);
     return OK;
@@ -1464,7 +1464,7 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
 
     /* This case should not happen... */
     if (!dobj->hfd) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                      "disk_cache: recall_headers called without fd for URL %s",
                      dobj->name);
         return APR_NOTFOUND;
@@ -1535,7 +1535,7 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
         CACHE_LOOP_INCTIME(delay);
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                  "disk_cache: Recalled headers for URL %s",  dobj->name);
     return APR_SUCCESS;
 }
@@ -1667,7 +1667,7 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
         rv = apr_file_open(fd, filename, flags, 
                            APR_FPROT_UREAD | APR_FPROT_UWRITE, r->pool);
 
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rv, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
                      "disk_cache: open_new_file: Opening %s", filename);
 
         if(APR_STATUS_IS_EEXIST(rv)) {
@@ -1689,7 +1689,7 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
 
                 rv = apr_file_remove(filename, r->pool);
                 if(rv != APR_SUCCESS && !APR_STATUS_IS_ENOENT(rv)) {
-                    ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                                  "disk_cache: open_new_file: Failed to "
                                  "remove old %s", filename);
                     return rv;
@@ -1708,7 +1708,7 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
 
             rv = mkdir_structure(filename, r->pool);
             if(rv != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                              "disk_cache: open_new_file: Failed to make "
                              "directory for %s", filename);
                 return rv;
@@ -1719,7 +1719,7 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
             return APR_SUCCESS;
         }
         else {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                          "disk_cache: open_new_file: Failed to open %s",
                          filename);
             return rv;
@@ -1786,7 +1786,7 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
 
     rv = safe_file_rename(dobj->tempfile, vfile, r->pool);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                      "disk_cache: rename tempfile to varyfile failed: "
                      "%s -> %s", dobj->tempfile, vfile);
         file_cache_errorcleanup(dobj, r);
@@ -1812,7 +1812,7 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
                                     CACHE_BODY_SUFFIX);
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                  "disk_cache: Stored vary header for URL %s", dobj->name);
 
     return APR_SUCCESS;
@@ -1949,12 +1949,12 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         {
             dobj->skipstore = TRUE;
 
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                          "disk_cache: store_headers: Headers current for URL "
                          "%s", dobj->name);
         }
         else {
-            ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                          "disk_cache: Rewriting headers for URL %s", 
                          dobj->name);
         }
@@ -1962,7 +1962,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     else {
         rewriting = FALSE;
 
-        ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                      "disk_cache: Storing new headers for URL %s", dobj->name);
     }
 
@@ -2032,7 +2032,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
             apr_file_close(dobj->hfd);
             dobj->hfd = NULL;
         }
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: Skipping store for URL %s: Someone else "
                      "beat us to it",  dobj->name);
         return APR_SUCCESS;
@@ -2054,7 +2054,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                  "disk_cache: Stored headers for URL %s",  dobj->name);
     return APR_SUCCESS;
 }
@@ -2528,7 +2528,7 @@ static apr_status_t replace_brigade_with_cache(cache_handle_t *h,
         return APR_ETIMEDOUT;
     }
     else if(rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                      "disk_cache: Error opening bodyfile %s for URL %s",
                      dobj->bodyfile, dobj->name);
         return rv;
@@ -2550,11 +2550,11 @@ static apr_status_t replace_brigade_with_cache(cache_handle_t *h,
 
     rv = recall_body(h, r->pool, bb);
     if (rv != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                      "disk_cache: Error serving URL %s from cache", dobj->name);
         return rv;
     }
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                  "disk_cache: Serving cached body for URL %s", dobj->name);
 
     return APR_SUCCESS;
@@ -2573,7 +2573,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                                  &disk_cache_module);
 
     if(r->no_cache) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: store_body called for URL %s even though"
                      "no_cache is set", dobj->name);
         file_cache_errorcleanup(dobj, r);
@@ -2701,7 +2701,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     if(copy_file) {
         apr_bucket_file *a;
 
-        ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                      "disk_cache: Copying body for URL %s, len %"
                      APR_OFF_T_FMT, dobj->name, dobj->file_size);
 
@@ -2718,7 +2718,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                            dobj->file_size, dobj->updtimeout);
         }
         if(rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                          "disk_cache: Copying body failed, "
                          "URL %s", dobj->name);
             if(rv != APR_ETIMEDOUT) {
@@ -2731,7 +2731,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     }
     else {
         if(first_call) {
-            ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                          "disk_cache: Caching body for URL %s, len %"
                          APR_OFF_T_FMT, dobj->name, dobj->initial_size);
         }
@@ -2771,7 +2771,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             APR_BUCKET_REMOVE(e);
             APR_BRIGADE_INSERT_TAIL(out, e);
             if (rv != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                              "disk_cache: Error when reading bucket for URL %s",
                              dobj->name);
                 file_cache_errorcleanup(dobj, r);
@@ -2786,7 +2786,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
             rv = apr_file_write_full(dobj->bfd, str, length, &written);
             if (rv != APR_SUCCESS) {
-                ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                              "disk_cache: Error when writing cache file for "
                              "URL %s", dobj->name);
                 file_cache_errorcleanup(dobj, r);
@@ -2796,7 +2796,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             }
             dobj->file_size += written;
             if (dobj->file_size > conf->maxfs) {
-                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                              "disk_cache: URL %s failed the size check "
                              "(%" APR_OFF_T_FMT " > %" APR_OFF_T_FMT ")",
                              dobj->name, dobj->file_size, conf->maxfs);
@@ -2817,7 +2817,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     }
 
     if(!copy_file) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "disk_cache: Done caching URL %s, len %" APR_OFF_T_FMT,
                      dobj->name, dobj->file_size);
 
@@ -2827,7 +2827,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
            was complete and there's no danger in keeping it even if the
            connection was aborted */
         if (r->no_cache || (r->connection->aborted && dobj->initial_size < 0)) {
-            ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                          "disk_cache: Discarding body for URL %s "
                          "because connection has been aborted.",
                          dobj->name);
@@ -2839,7 +2839,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         }
 
         if (dobj->file_size < conf->minfs) {
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                          "disk_cache: URL %s failed the size check "
                          "(%" APR_OFF_T_FMT " < %" APR_OFF_T_FMT ")",
                          dobj->name, dobj->file_size, conf->minfs);
@@ -2862,7 +2862,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             }
         }
         else if(dobj->initial_size != dobj->file_size) {
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                          "disk_cache: URL %s - body size mismatch: suggested %"
                          APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")",
                          dobj->name, dobj->initial_size, dobj->file_size);
