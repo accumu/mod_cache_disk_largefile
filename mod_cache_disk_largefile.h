@@ -17,6 +17,9 @@
 #ifndef MOD_DISK_CACHE_H
 #define MOD_DISK_CACHE_H
 
+#include "mod_cache.h"
+#include "apr_file_io.h"
+
 /*
  * include for mod_disk_cache: Disk Based HTTP 1.1 Cache.
  */
@@ -66,6 +69,9 @@ typedef struct {
     /* The body size forced to 64bit to not break when people go from non-LFS
      * to LFS builds */
     apr_int64_t file_size;
+
+    /* The parsed cache control header */
+    cache_control_t control;
 
     /* The size of the entity name that follows. */
     apr_uint32_t name_len;

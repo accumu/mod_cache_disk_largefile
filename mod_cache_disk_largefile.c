@@ -1147,6 +1147,8 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     info->request_time = dobj->disk_info.request_time;
     info->response_time = dobj->disk_info.response_time;
 
+    memcpy(&info->control, &dobj->disk_info.control, sizeof(cache_control_t));
+
     dobj->lastmod = dobj->disk_info.lastmod;
     dobj->initial_size = (apr_off_t) dobj->disk_info.file_size;
     dobj->tempfile = apr_pstrcat(r->pool, conf->cache_root, AP_TEMPFILE, NULL);
@@ -1835,6 +1837,8 @@ static apr_status_t store_disk_header(disk_cache_object_t *dobj,
     disk_info.status = info->status;
     disk_info.file_size = dobj->initial_size;
     disk_info.lastmod = dobj->lastmod;
+
+    memcpy(&disk_info.control, &h->cache_obj->info.control, sizeof(cache_control_t));
 
     niov = 0;
     iov[niov].iov_base = (void*)&format;
