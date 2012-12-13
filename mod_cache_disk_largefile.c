@@ -67,7 +67,8 @@ module AP_MODULE_DECLARE_DATA disk_cache_module;
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
 static apr_status_t store_headers(cache_handle_t *h, request_rec *r, cache_info *i);
-static apr_status_t store_body(cache_handle_t *h, request_rec *r, apr_bucket_brigade *b);
+static apr_status_t store_body(cache_handle_t *h, request_rec *r, apr_bucket_brigade *in,
+                               apr_bucket_brigade *out);
 static apr_status_t recall_headers(cache_handle_t *h, request_rec *r);
 static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_brigade *bb);
 static apr_status_t read_array(request_rec *r, apr_array_header_t* arr,
@@ -2547,11 +2548,12 @@ static apr_status_t replace_brigade_with_cache(cache_handle_t *h,
 
 
 static apr_status_t store_body(cache_handle_t *h, request_rec *r,
-                               apr_bucket_brigade *bb)
+                               apr_bucket_brigade *in, apr_bucket_brigade *out)
 {
     apr_bucket *e;
     apr_status_t rv;
     int copy_file = FALSE, first_call = FALSE, did_bgcopy = FALSE;
+    int seen_eos = FALSE;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
                                                  &disk_cache_module);
@@ -2566,6 +2568,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
     if(dobj->initial_size == 0) {
         /* Don't waste a body cachefile on a 0 length body */
+        APR_BRIGADE_CONCAT(out, in);
         return APR_SUCCESS;
     }
 
@@ -2614,11 +2617,16 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
         if(dobj->skipstore) {
             /* Someone else beat us to storing this object */
+
+            /* FIXME: Perhaps do something more elegant using the new
+                      in/out brigades, this emulates old behaviour */
+            APR_BRIGADE_CONCAT(out, in);
+
             if( dobj->initial_size > 0 &&
-                    APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(bb)) )
+                    APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(out)) )
             {
                 /* Yay, we can replace the body with the cached instance */
-                return replace_brigade_with_cache(h, r, bb);
+                return replace_brigade_with_cache(h, r, out);
             }
 
             return APR_SUCCESS;
@@ -2629,9 +2637,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
      * file copy.
      */
     /* FIXME: Make the min size to do file copy run-time config? */
+    /* FIXME: Should probably save the copy_file status so we don't do
+              this check on subsequent calls */
     if(dobj->file_size == 0 && 
             dobj->initial_size > APR_BUCKET_BUFF_SIZE &&
-            APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(bb)) )
+            APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(in)) )
     {
         apr_off_t begin = -1;
         apr_off_t pos = -1;
@@ -2640,11 +2650,13 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
         copy_file = TRUE;
 
-        for (e = APR_BRIGADE_FIRST(bb);
-                e != APR_BRIGADE_SENTINEL(bb);
+        for (e = APR_BRIGADE_FIRST(in);
+                e != APR_BRIGADE_SENTINEL(in);
                 e = APR_BUCKET_NEXT(e))
         {
             if(APR_BUCKET_IS_EOS(e)) {
+                /* FIXME: This is probably the wrong place... */
+                seen_eos = TRUE;
                 break;
             }
             if(!APR_BUCKET_IS_FILE(e)) {
@@ -2679,7 +2691,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                      "disk_cache: Copying body for URL %s, len %"
                      APR_OFF_T_FMT, dobj->name, dobj->file_size);
 
-        e = APR_BRIGADE_FIRST(bb);
+        e = APR_BRIGADE_FIRST(in);
         a = e->data;
 
         if(dobj->file_size > conf->minbgsize) {
@@ -2710,19 +2722,40 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                          APR_OFF_T_FMT, dobj->name, dobj->initial_size);
         }
 
-        for (e = APR_BRIGADE_FIRST(bb);
-                e != APR_BRIGADE_SENTINEL(bb);
-                e = APR_BUCKET_NEXT(e))
-        {   
+        while (!APR_BRIGADE_EMPTY(in))
+        {
             const char *str;
             apr_size_t length, written;
 
+            e = APR_BRIGADE_FIRST(in);
+
+            /* FIXME: Should probably handle buckets after EOS gracefully */
+
+            /* End Of Stream? */
+            if (APR_BUCKET_IS_EOS(e)) {
+                APR_BUCKET_REMOVE(e);
+                APR_BRIGADE_INSERT_TAIL(out, e);
+                seen_eos = TRUE;
+                break;
+            }
+
+            /* honour flush buckets, we'll get called again */
+            if (APR_BUCKET_IS_FLUSH(e)) {
+                APR_BUCKET_REMOVE(e);
+                APR_BRIGADE_INSERT_TAIL(out, e);
+                return APR_SUCCESS;
+            }
+
             /* Ignore the non-data-buckets */
             if(APR_BUCKET_IS_METADATA(e)) {
+                APR_BUCKET_REMOVE(e);
+                APR_BRIGADE_INSERT_TAIL(out, e);
                 continue;
             }
 
             rv = apr_bucket_read(e, &str, &length, APR_BLOCK_READ);
+            APR_BUCKET_REMOVE(e);
+            APR_BRIGADE_INSERT_TAIL(out, e);
             if (rv != APR_SUCCESS) {
                 ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
                              "disk_cache: Error when reading bucket for URL %s",
@@ -2732,6 +2765,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 apr_file_remove(dobj->bodyfile, r->pool);
                 return rv;
             }
+            /* don't write empty buckets to the cache */
+            if (!length) {
+                continue;
+            }
+
             rv = apr_file_write_full(dobj->bfd, str, length, &written);
             if (rv != APR_SUCCESS) {
                 ap_log_error(APLOG_MARK, APLOG_ERR, rv, r->server,
@@ -2753,12 +2791,14 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 apr_file_remove(dobj->bodyfile, r->pool);
                 return APR_EGENERAL;
             }
+            /* FIXME: Add handling of max time/bytes to handle in each call
+                      similar to upstream mod_cache_disk */
         }
     }
 
 
     /* Drop out here if this wasn't the end */
-    if (!APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(bb))) {
+    if (!seen_eos) {
         return APR_SUCCESS;
     }
 
@@ -2833,10 +2873,12 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         apr_file_mtime_set(dobj->bodyfile, dobj->lastmod, r->pool);
     }
 
-
     /* Redirect to cachefile if we copied a plain file */
     if(copy_file) {
-        rv = replace_brigade_with_cache(h, r, bb);
+        /* FIXME: Perhaps do something more elegant using the new
+                  in/out brigades, this emulates old behaviour */
+        APR_BRIGADE_CONCAT(out, in);
+        rv = replace_brigade_with_cache(h, r, out);
         if(rv != APR_SUCCESS) {
             return rv;
         }
@@ -3045,3 +3087,7 @@ AP_DECLARE_MODULE(cache_disk_largefile) = {
     disk_cache_cmds,            /* command apr_table_t */
     disk_cache_register_hook    /* register hooks */
 };
+
+/*
+vim:sw=4:sts=4:et:ai
+*/
