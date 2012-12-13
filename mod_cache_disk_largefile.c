@@ -2979,7 +2979,7 @@ static const char
     disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
                                                  &cache_disk_largefile_module);
 
-    if (apr_strtoff(&conf->minfs, arg, NULL, 0) != APR_SUCCESS ||
+    if (apr_strtoff(&conf->minfs, arg, NULL, 10) != APR_SUCCESS ||
             conf->minfs < 0) 
     {
         return "CacheMinFileSize argument must be a non-negative integer representing the min size of a file to cache in bytes.";
@@ -2992,7 +2992,7 @@ static const char
 {
     disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
                                                  &cache_disk_largefile_module);
-    if (apr_strtoff(&conf->maxfs, arg, NULL, 0) != APR_SUCCESS ||
+    if (apr_strtoff(&conf->maxfs, arg, NULL, 10) != APR_SUCCESS ||
             conf->maxfs < 0) 
     {
         return "CacheMaxFileSize argument must be a non-negative integer representing the max size of a file to cache in bytes.";
@@ -3009,7 +3009,7 @@ static const char
     disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
                                                  &cache_disk_largefile_module);
 
-    if (apr_strtoff(&val, arg, NULL, 0) != APR_SUCCESS || val < 0) 
+    if (apr_strtoff(&val, arg, NULL, 10) != APR_SUCCESS || val < 0) 
     {
         return "CacheUpdateTimeout argument must be a non-negative integer representing the timeout in milliseconds for cache update operations";
     }
@@ -3026,7 +3026,7 @@ static const char
     disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
                                                  &cache_disk_largefile_module);
 
-    if (apr_strtoff(&conf->minbgsize, arg, NULL, 0) != APR_SUCCESS ||
+    if (apr_strtoff(&conf->minbgsize, arg, NULL, 10) != APR_SUCCESS ||
             conf->minbgsize < 0) 
     {
         return "CacheMinBGSize argument must be a non-negative integer representing the min size in bytes for a file to be eligable for background caching";
