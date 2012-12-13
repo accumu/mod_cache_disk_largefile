@@ -1096,6 +1096,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
 static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 {
     apr_status_t rc;
+    cache_object_t *obj;
     disk_cache_object_t *dobj;
     cache_info *info;
     static int error_logged = 0;
@@ -1116,9 +1117,9 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     }
 
     /* Create and init the cache object */
-    h->cache_obj = apr_pcalloc(r->pool, sizeof(cache_object_t));
-    h->cache_obj->vobj = dobj = apr_pcalloc(r->pool, sizeof(disk_cache_object_t));
-    info = &(h->cache_obj->info);
+    obj = apr_pcalloc(r->pool, sizeof(cache_object_t));
+    dobj = apr_pcalloc(r->pool, sizeof(disk_cache_object_t));
+    info = &(obj->info);
 
     /* Save the cache root */
     dobj->root = apr_pstrndup(r->pool, conf->cache_root, conf->cache_root_len);
@@ -1182,6 +1183,10 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     else {
         dobj->file_size = 0;
     }
+
+    /* make the configuration stick */
+    h->cache_obj = obj;
+    h->cache_obj->vobj = dobj;
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                  "cache_disk_largefile: Recalled status for cached URL %s from file %s",
