@@ -961,8 +961,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
     cache_info *info = &(cache_obj->info);
     
 #if APR_HAS_SENDFILE
-    core_dir_config *pdconf = ap_get_module_config(r->per_dir_config,
-                                                   &core_module);
+    core_dir_config *pdconf = ap_get_core_module_config(r->per_dir_config);
     /* When we are in the quick handler we don't have the per-directory
      * configuration, so this check only takes the global setting of
      * the EnableSendFile directive into account.  */
