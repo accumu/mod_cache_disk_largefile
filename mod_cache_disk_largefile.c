@@ -1348,6 +1348,11 @@ static apr_status_t commit_entity(cache_handle_t *h, request_rec *r)
     return APR_SUCCESS;
 }
 
+static apr_status_t invalidate_entity(cache_handle_t *h, request_rec *r)
+{
+    return APR_ENOTIMPL;
+}
+
 static apr_status_t read_array(request_rec *r, apr_array_header_t* arr,
                                apr_file_t *file)
 {
@@ -3087,7 +3092,8 @@ static const cache_provider cache_disk_provider =
     &create_entity,
     &open_entity,
     &remove_url,
-    &commit_entity
+    &commit_entity,
+    &invalidate_entity
 };
 
 static void disk_cache_register_hook(apr_pool_t *p)
