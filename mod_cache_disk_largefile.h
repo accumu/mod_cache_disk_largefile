@@ -20,6 +20,9 @@
 #include "mod_cache.h"
 #include "apr_file_io.h"
 
+#define S_MIN(a,b) (((a)<(b))?(a):(b))
+#define S_MAX(a,b) (((a)>(b))?(a):(b))
+
 /*
  * include for mod_cache_disk_largefile: Disk Based HTTP 1.1 Cache.
  */
