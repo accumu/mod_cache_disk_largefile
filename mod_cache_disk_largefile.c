@@ -2577,7 +2577,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     apr_bucket *e;
     apr_status_t rv;
     int copy_file = FALSE, first_call = FALSE, did_bgcopy = FALSE;
-    int seen_eos = FALSE;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
                                                  &cache_disk_largefile_module);
@@ -2655,56 +2654,53 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
             return APR_SUCCESS;
         }
-    }
 
-    /* Check if this is a complete single sequential file, eligable for
-     * file copy.
-     */
-    /* FIXME: Make the min size to do file copy run-time config? */
-    /* FIXME: Should probably save the copy_file status so we don't do
-              this check on subsequent calls */
-    if(dobj->file_size == 0 && 
-            dobj->initial_size > APR_BUCKET_BUFF_SIZE &&
-            APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(in)) )
-    {
-        apr_off_t begin = -1;
-        apr_off_t pos = -1;
-        apr_file_t *fd = NULL;
-        apr_bucket_file *a;
-
-        copy_file = TRUE;
-
-        for (e = APR_BRIGADE_FIRST(in);
-                e != APR_BRIGADE_SENTINEL(in);
-                e = APR_BUCKET_NEXT(e))
+        /* Check if this is a complete single sequential file, eligable for
+         * file copy.
+         */
+        /* FIXME: Make the min size to do file copy run-time config? */
+        /* FIXME: Should probably save the copy_file status so we don't do
+                  this check on subsequent calls */
+        if(dobj->initial_size > APR_BUCKET_BUFF_SIZE &&
+                APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(in)) )
         {
-            if(APR_BUCKET_IS_EOS(e)) {
-                /* FIXME: This is probably the wrong place... */
-                seen_eos = TRUE;
-                break;
+            apr_off_t begin = -1;
+            apr_off_t pos = -1;
+            apr_file_t *fd = NULL;
+            apr_bucket_file *a;
+
+            copy_file = TRUE;
+
+            for (e = APR_BRIGADE_FIRST(in);
+                    e != APR_BRIGADE_SENTINEL(in);
+                    e = APR_BUCKET_NEXT(e))
+            {
+                if(APR_BUCKET_IS_EOS(e)) {
+                    break;
+                }
+                if(!APR_BUCKET_IS_FILE(e)) {
+                    copy_file = FALSE;
+                    break;
+                }
+
+                a = e->data;
+
+                if(begin < 0) {
+                    begin = pos = e->start;
+                    fd = a->fd;
+                }
+
+                if(fd != a->fd || pos != e->start) {
+                    copy_file = FALSE;
+                    break;
+                }
+
+                pos += e->length;
             }
-            if(!APR_BUCKET_IS_FILE(e)) {
-                copy_file = FALSE;
-                break;
+
+            if(copy_file) {
+                dobj->file_size = pos;
             }
-
-            a = e->data;
-
-            if(begin < 0) {
-                begin = pos = e->start;
-                fd = a->fd;
-            }
-
-            if(fd != a->fd || pos != e->start) {
-                copy_file = FALSE;
-                break;
-            }
-
-            pos += e->length;
-        }
-
-        if(copy_file) {
-            dobj->file_size = pos;
         }
     }
 
@@ -2737,6 +2733,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             }
             return rv;
         }
+        dobj->body_done = TRUE;
 
     }
     else {
@@ -2753,14 +2750,18 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
             e = APR_BRIGADE_FIRST(in);
 
-            /* FIXME: Should probably handle buckets after EOS gracefully */
+            if(dobj->body_done) {
+                APR_BUCKET_REMOVE(e);
+                APR_BRIGADE_INSERT_TAIL(out, e);
+                continue;
+            }
 
             /* End Of Stream? */
             if (APR_BUCKET_IS_EOS(e)) {
                 APR_BUCKET_REMOVE(e);
                 APR_BRIGADE_INSERT_TAIL(out, e);
-                seen_eos = TRUE;
-                break;
+                dobj->body_done = TRUE;
+                continue;
             }
 
             /* honour flush buckets, we'll get called again */
@@ -2822,89 +2823,93 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
 
     /* Drop out here if this wasn't the end */
-    if (!seen_eos) {
+    if (!dobj->body_done) {
         return APR_SUCCESS;
     }
 
-    if(!copy_file) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "Done caching URL %s, len %" APR_OFF_T_FMT,
-                     dobj->name, dobj->file_size);
-
-        /* FIXME: Do we really need to check r->no_cache here since we checked
-           it in the beginning? */
-        /* Assume that if we've got an initial size then bucket brigade
-           was complete and there's no danger in keeping it even if the
-           connection was aborted */
-        if (r->no_cache || (r->connection->aborted && dobj->initial_size < 0)) {
-            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                         "Discarding body for URL %s "
-                         "because connection has been aborted.",
-                         dobj->name);
-            /* Remove the intermediate cache file and return non-APR_SUCCESS */
-            file_cache_errorcleanup(dobj, r);
-            apr_file_remove(dobj->hdrsfile, r->pool);
-            apr_file_remove(dobj->bodyfile, r->pool);
-            return APR_EGENERAL;
-        }
-
-        if (dobj->file_size < conf->minfs) {
+    if(dobj->bfd) {
+        if(!copy_file) {
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                         "URL %s failed the size check "
-                         "(%" APR_OFF_T_FMT " < %" APR_OFF_T_FMT ")",
-                         dobj->name, dobj->file_size, conf->minfs);
-            /* Remove the intermediate cache file and return non-APR_SUCCESS */
-            file_cache_errorcleanup(dobj, r);
-            apr_file_remove(dobj->hdrsfile, r->pool);
-            apr_file_remove(dobj->bodyfile, r->pool);
-            return APR_EGENERAL;
-        }
+                         "Done caching URL %s, len %" APR_OFF_T_FMT,
+                         dobj->name, dobj->file_size);
 
-        if(dobj->initial_size < 0) {
-            /* Update header information now that we know the size */
-            dobj->initial_size = dobj->file_size;
-            rv = store_headers(h, r, &(h->cache_obj->info));
-            if(rv != APR_SUCCESS) {
+            /* FIXME: Do we really need to check r->no_cache here since we
+               checked it in the beginning? */
+            /* Assume that if we've got an initial size then bucket brigade
+               was complete and there's no danger in keeping it even if the
+               connection was aborted */
+            if (r->no_cache || (r->connection->aborted && dobj->initial_size < 0)) {
+                ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
+                             "Discarding body for URL %s "
+                             "because connection has been aborted.",
+                             dobj->name);
+                /* Remove the intermediate cache file and 
+                   return non-APR_SUCCESS */
                 file_cache_errorcleanup(dobj, r);
                 apr_file_remove(dobj->hdrsfile, r->pool);
                 apr_file_remove(dobj->bodyfile, r->pool);
-                return rv;
+                return APR_EGENERAL;
+            }
+
+            if (dobj->file_size < conf->minfs) {
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                             "URL %s failed the size check "
+                             "(%" APR_OFF_T_FMT " < %" APR_OFF_T_FMT ")",
+                             dobj->name, dobj->file_size, conf->minfs);
+                /* Remove the intermediate cache file and 
+                   return non-APR_SUCCESS */
+                file_cache_errorcleanup(dobj, r);
+                apr_file_remove(dobj->hdrsfile, r->pool);
+                apr_file_remove(dobj->bodyfile, r->pool);
+                return APR_EGENERAL;
+            }
+
+            if(dobj->initial_size < 0) {
+                /* Update header information now that we know the size */
+                dobj->initial_size = dobj->file_size;
+                rv = store_headers(h, r, &(h->cache_obj->info));
+                if(rv != APR_SUCCESS) {
+                    file_cache_errorcleanup(dobj, r);
+                    apr_file_remove(dobj->hdrsfile, r->pool);
+                    apr_file_remove(dobj->bodyfile, r->pool);
+                    return rv;
+                }
+            }
+            else if(dobj->initial_size != dobj->file_size) {
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                             "URL %s - body size mismatch: suggested %"
+                             APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")",
+                             dobj->name, dobj->initial_size, dobj->file_size);
+                file_cache_errorcleanup(dobj, r);
+                apr_file_remove(dobj->hdrsfile, r->pool);
+                apr_file_remove(dobj->bodyfile, r->pool);
+                return APR_EGENERAL;
             }
         }
-        else if(dobj->initial_size != dobj->file_size) {
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                         "URL %s - body size mismatch: suggested %"
-                         APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")",
-                         dobj->name, dobj->initial_size, dobj->file_size);
-            file_cache_errorcleanup(dobj, r);
-            apr_file_remove(dobj->hdrsfile, r->pool);
-            apr_file_remove(dobj->bodyfile, r->pool);
-            return APR_EGENERAL;
-        }
-    }
 
-    /* All checks were fine, close output file */
-    rv = apr_file_close(dobj->bfd);
-    dobj->bfd = NULL;
-    if(rv != APR_SUCCESS) {
-        apr_file_remove(dobj->bodyfile, r->pool);
-        file_cache_errorcleanup(dobj, r);
-        return rv;
-    }
-
-    /* Set mtime on body file */
-    if(!did_bgcopy && dobj->lastmod != APR_DATE_BAD) {
-        apr_file_mtime_set(dobj->bodyfile, dobj->lastmod, r->pool);
-    }
-
-    /* Redirect to cachefile if we copied a plain file */
-    if(copy_file) {
-        /* FIXME: Perhaps do something more elegant using the new
-                  in/out brigades, this emulates old behaviour */
-        APR_BRIGADE_CONCAT(out, in);
-        rv = replace_brigade_with_cache(h, r, out);
+        /* All checks were fine, close output file */
+        rv = apr_file_close(dobj->bfd);
+        dobj->bfd = NULL;
         if(rv != APR_SUCCESS) {
+            apr_file_remove(dobj->bodyfile, r->pool);
+            file_cache_errorcleanup(dobj, r);
             return rv;
+        }
+
+        /* Set mtime on body file */
+        if(!did_bgcopy && dobj->lastmod != APR_DATE_BAD) {
+            apr_file_mtime_set(dobj->bodyfile, dobj->lastmod, r->pool);
+        }
+
+        /* Redirect to cachefile if we copied a plain file */
+        if(copy_file) {
+            /* FIXME: Perhaps do something more elegant using the new
+                      in/out brigades, this emulates old behaviour */
+            APR_BRIGADE_CONCAT(out, in);
+            rv = replace_brigade_with_cache(h, r, out);
+            if(rv != APR_SUCCESS) {
+                return rv;
+            }
         }
     }
 

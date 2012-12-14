@@ -117,14 +117,15 @@ typedef struct disk_cache_object {
     char *filename;             /* Filename of requested URL (if present) */
     char **rfilename;           /* Pointer to r->filename */
 
-    apr_off_t initial_size;      /* Size of body as reported upstreams */
-    apr_off_t file_size;         /* File size of the cached body */
+    apr_off_t initial_size;     /* Size of body as reported upstreams */
+    apr_off_t file_size;        /* File size of the cached body */
 
-    apr_time_t lastmod;          /* Last-Modified (if present) */
+    apr_time_t lastmod;         /* Last-Modified (if present) */
 
-    int skipstore;              /* Set if we should skip storing stuff */
-
-    int removedirs;             /* Set it we should rmdir when doing rm */
+    /* Flags */
+    unsigned int skipstore:1;   /* Set if we should skip storing stuff */
+    unsigned int removedirs:1;  /* Set it we should rmdir when doing rm */
+    unsigned int body_done:1;   /* Set when we're done with the body */
 
     int header_only;            /* Copy of r->header_only */
 
