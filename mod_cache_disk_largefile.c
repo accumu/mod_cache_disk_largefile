@@ -681,16 +681,15 @@ static apr_status_t file_read_timeout(apr_file_t *file, char * buf,
 }
 
 
-static apr_status_t open_header(cache_handle_t *h, request_rec *r, 
-                                const char *key, disk_cache_conf *conf)
+static apr_status_t open_header(cache_object_t *obj, disk_cache_object_t *dobj,
+                                request_rec *r, const char *key, 
+                                disk_cache_conf *conf)
 {
     int flags = APR_READ | APR_WRITE | APR_BINARY;
     disk_cache_format_t format;
     apr_status_t rc;
     const char *nkey = key;
     disk_cache_info_t disk_info;
-    cache_object_t *obj = h->cache_obj;
-    disk_cache_object_t *dobj = obj->vobj;
 
     /* Open header read/write so it's easy to rewrite it when needed */
     rc = apr_file_open(&dobj->hfd, dobj->hdrsfile, flags, 0, r->pool);
@@ -783,21 +782,21 @@ static apr_status_t open_header(cache_handle_t *h, request_rec *r,
 }
 
 
-static apr_status_t open_header_timeout(cache_handle_t *h, request_rec *r, 
-                                const char *key, disk_cache_conf *conf)
+static apr_status_t open_header_timeout(cache_object_t *obj, 
+                                        disk_cache_object_t *dobj, 
+                                        request_rec *r, 
+                                        const char *key, disk_cache_conf *conf)
 {
     apr_status_t rc;
     apr_finfo_t finfo;
     apr_interval_time_t delay = 0;
-    cache_object_t *obj = h->cache_obj;
-    disk_cache_object_t *dobj = obj->vobj;
 
     while(1) {
         if(dobj->hfd) {
             apr_file_close(dobj->hfd);
             dobj->hfd = NULL;
         }
-        rc = open_header(h, r, key, conf);
+        rc = open_header(obj, dobj, r, key, conf);
         if(rc != APR_SUCCESS && rc != CACHE_ENODATA) {
             if(rc != CACHE_EDECLINED) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rc, r,
@@ -951,13 +950,13 @@ static apr_status_t load_header_strings(request_rec *r,
 }
 
 
-static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj)
+static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
+                                      disk_cache_object_t *dobj)
 {
     apr_status_t rc;
     apr_finfo_t finfo;
     int flags = APR_READ|APR_BINARY;
     apr_interval_time_t delay = 0;
-    disk_cache_object_t *dobj = (disk_cache_object_t *) cache_obj->vobj;
     cache_info *info = &(cache_obj->info);
     
 #if APR_HAS_SENDFILE
@@ -1132,7 +1131,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
     /* Open header and read basic info, wait until header contains
        valid size information for the body */
-    rc = open_header_timeout(h, r, key, conf);
+    rc = open_header_timeout(obj, dobj, r, key, conf);
     if(rc != APR_SUCCESS) {
         if(dobj->hfd != NULL) {
             apr_file_close(dobj->hfd);
@@ -1166,7 +1165,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     /* Only need body cachefile if we have a body and this isn't a HEAD
        request */
     if(dobj->initial_size > 0 && !dobj->header_only) {
-        rc = open_body_timeout(r, h->cache_obj);
+        rc = open_body_timeout(r, obj, dobj);
         if(rc != APR_SUCCESS) {
             if(dobj->hfd != NULL) {
                 apr_file_close(dobj->hfd);
@@ -2533,7 +2532,7 @@ static apr_status_t replace_brigade_with_cache(cache_handle_t *h,
         dobj->bfd = NULL;
     }
 
-    rv = open_body_timeout(r, h->cache_obj);
+    rv = open_body_timeout(r, h->cache_obj, dobj);
     if(rv == CACHE_EDECLINED) {
         return APR_ETIMEDOUT;
     }
@@ -3105,7 +3104,7 @@ static const cache_provider cache_disk_provider =
 static void disk_cache_register_hook(apr_pool_t *p)
 {
     /* cache initializer */
-    ap_register_provider(p, CACHE_PROVIDER_GROUP, "disk", "0",
+    ap_register_provider(p, CACHE_PROVIDER_GROUP, "disk_largefile", "0",
                          &cache_disk_provider);
 }
 
