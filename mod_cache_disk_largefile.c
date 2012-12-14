@@ -171,7 +171,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
             return rv;
         }
 
-        if(finfo.size >= fileoffset + MIN(filelength, CACHE_BUCKET_MINCHUNK)) {
+        if(finfo.size >= fileoffset + S_MIN(filelength, CACHE_BUCKET_MINCHUNK)) {
             break;
         }
 
@@ -210,7 +210,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     apr_bucket_heap_make(e, buf, 0, apr_bucket_free);
 
     /* Wrap as much as possible into a regular file bucket */
-    available = MIN(filelength, finfo.size-fileoffset);
+    available = S_MIN(filelength, finfo.size-fileoffset);
     b = apr_bucket_file_create(f, fileoffset, available, a->readpool, e->list);
     APR_BUCKET_INSERT_AFTER(e, b);
 
@@ -424,7 +424,7 @@ static apr_status_t safe_file_rename(const char *src, const char *dest,
         int i;
 
         for (i = 0; i < 2 && rv != APR_SUCCESS; i++) {
-            rv = mkdir_structure(conf, dest, pool);
+            rv = mkdir_structure(dest, pool);
             if (rv != APR_SUCCESS)
                 continue;
 
@@ -1254,7 +1254,7 @@ static int remove_entity(cache_handle_t *h)
 
 /* FIXME: It would make sense to have the errorcleanup and this function
    to be the same */
-static int remove_url(cache_handle_t *h, apr_pool_t *p)
+static int remove_url(cache_handle_t *h, request_rec *r)
 {
     apr_status_t rc;
     disk_cache_object_t *dobj;
@@ -1267,15 +1267,15 @@ static int remove_url(cache_handle_t *h, apr_pool_t *p)
 
     /* Delete headers file */
     if (dobj->hdrsfile) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "Deleting %s from cache.", dobj->hdrsfile);
 
-        rc = apr_file_remove(dobj->hdrsfile, p);
+        rc = apr_file_remove(dobj->hdrsfile, r->pool);
         if ((rc != APR_SUCCESS) && !APR_STATUS_IS_ENOENT(rc)) {
             /* Will only result in an output if httpd is started with -e debug.
              * For reason see log_error_core for the case s == NULL.
              */
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, NULL,
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
                          "Failed to delete headers file %s "
                          "from cache.", dobj->hdrsfile);
             return DECLINED;
@@ -1284,12 +1284,12 @@ static int remove_url(cache_handle_t *h, apr_pool_t *p)
 
     /* Only delete body cache file if it isn't backed by a real file */
     if(!dobj->filename && dobj->bodyfile) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "Deleting %s from cache.", dobj->bodyfile);
 
-        rc = apr_file_remove(dobj->bodyfile, p);
+        rc = apr_file_remove(dobj->bodyfile, r->pool);
         if ((rc != APR_SUCCESS) && !APR_STATUS_IS_ENOENT(rc)) {
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, NULL,
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
                          "Failed to delete body file %s "
                          "from cache.", dobj->bodyfile);
             return DECLINED;
@@ -1308,7 +1308,7 @@ static int remove_url(cache_handle_t *h, apr_pool_t *p)
         if (str_to_copy) {
             char *dir, *slash, *q;
 
-            dir = apr_pstrdup(p, str_to_copy);
+            dir = apr_pstrdup(r->pool, str_to_copy);
 
             /* remove filename */
             slash = strrchr(dir, '/');
@@ -1329,7 +1329,7 @@ static int remove_url(cache_handle_t *h, apr_pool_t *p)
                               "Deleting directory %s from cache",
                               dir);
 
-                 rc = apr_dir_remove(dir, p);
+                 rc = apr_dir_remove(dir, r->pool);
                  if (rc != APR_SUCCESS && !APR_STATUS_IS_ENOENT(rc)) {
                     break;
                  }
@@ -1651,7 +1651,7 @@ static apr_status_t store_table(apr_file_t *fd, apr_table_t *table,
     while(niov > 0) {
         /* Need to write this in chunks, APR_MAX_IOVEC_SIZE is really small
            on some OS's */
-        int chunk = MIN(niov, APR_MAX_IOVEC_SIZE);
+        int chunk = S_MIN(niov, APR_MAX_IOVEC_SIZE);
         apr_size_t amt;
 
         rv = apr_file_writev_full(fd, (const struct iovec *) &iov[i], chunk,
@@ -1828,10 +1828,11 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
 }
 
 
-static apr_status_t store_disk_header(disk_cache_object_t *dobj,
-                                       request_rec *r, cache_info *info)
+static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r, 
+                                      cache_info *info)
 {
     disk_cache_format_t format = DISK_FORMAT_VERSION;
+    disk_cache_object_t *dobj = (disk_cache_object_t*) h->cache_obj->vobj;
     struct iovec iov[5];
     int niov;
     disk_cache_info_t disk_info;
@@ -2047,7 +2048,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         return APR_SUCCESS;
     }
 
-    rv = store_disk_header(dobj, r, info);
+    rv = store_disk_header(h, r, info);
     if(rv != APR_SUCCESS) {
         return rv;
     }
@@ -2113,7 +2114,7 @@ static apr_status_t copy_body(apr_pool_t *p,
     off64_t srcoff_os;
     int err;
 
-    char *buf = apr_palloc(p, MIN(len, CACHE_BUF_SIZE));
+    char *buf = apr_palloc(p, S_MIN(len, CACHE_BUF_SIZE));
     if (!buf) {
         return APR_ENOMEM;
     }
@@ -2149,7 +2150,7 @@ static apr_status_t copy_body(apr_pool_t *p,
 
     srcoff_os = 0;
     while(len > 0) {
-        size=MIN(len, CACHE_BUF_SIZE);
+        size=S_MIN(len, CACHE_BUF_SIZE);
 
         rc = apr_file_read_full (srcfd, buf, size, NULL);
         if(rc != APR_SUCCESS) {
