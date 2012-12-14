@@ -88,8 +88,6 @@ typedef struct {
 } disk_cache_info_t;
 
 
-/* Don't expose module-related stuff unless needed */
-#ifdef AP_FILTER_H
 /*
  * disk_cache_object_t
  * Pointed to by cache_object_t::vobj
@@ -207,7 +205,5 @@ struct copyinfo {
 #define CACHE_ENODATA (APR_OS_START_USERERR+1)
 #define CACHE_EDECLINED (APR_OS_START_USERERR+2)
 #define CACHE_EEXIST (APR_OS_START_USERERR+3)
-
-#endif /* AP_FILTER_H */
 
 #endif /*MOD_CACHE_DISK_LARGEFILE_H*/
