@@ -143,8 +143,11 @@ typedef struct disk_cache_object {
  */
 /* TODO: Make defaults OS specific */
 #define CACHEFILE_LEN 20        /* must be less than HASH_LEN/2 */
+
+/* This gives us 4096 directories (64^2) */
 #define DEFAULT_DIRLEVELS 2
 #define DEFAULT_DIRLENGTH 1
+
 #define DEFAULT_MIN_BACKGROUND_SIZE 1000000
 #define DEFAULT_UPDATE_TIMEOUT apr_time_from_sec(10)
 
