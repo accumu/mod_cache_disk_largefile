@@ -369,8 +369,8 @@ static char *cache_file(apr_pool_t *p, disk_cache_conf *conf,
 
     char *hashfile;
 
-    hashfile = ap_cache_generate_name(p, conf->dirlevels,
-                                                conf->dirlength, name);
+    hashfile = ap_cache_generate_name(p, DEFAULT_DIRLEVELS, DEFAULT_DIRLENGTH, 
+                                      name);
 
     /* This assumes that we always deal with Vary-stuff if there's a prefix */
     if (prefix) {
@@ -575,22 +575,6 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
         return DECLINED;
     }
 
-    /* Note, len is -1 if unknown so don't trust it too hard */
-    if (len > conf->maxfs) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "URL %s failed the size check "
-                     "(%" APR_OFF_T_FMT " > %" APR_OFF_T_FMT ")",
-                     key, len, conf->maxfs);
-        return DECLINED;
-    }
-    if (len >= 0 && len < conf->minfs) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "URL %s failed the size check "
-                     "(%" APR_OFF_T_FMT " < %" APR_OFF_T_FMT ")",
-                     key, len, conf->minfs);
-        return DECLINED;
-    }
-
     /* Allocate and initialize cache_object_t and disk_cache_object_t */
     h->cache_obj = obj = apr_pcalloc(r->pool, sizeof(*obj));
     obj->vobj = dobj = apr_pcalloc(r->pool, sizeof(*dobj));
@@ -607,7 +591,6 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     dobj->file_size = -1;
     dobj->lastmod = APR_DATE_BAD;
     dobj->updtimeout = conf->updtimeout;
-    dobj->removedirs = conf->removedirs;
     dobj->header_only = r->header_only;
     dobj->bytes_sent = 0;
 
@@ -1126,7 +1109,6 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     dobj->hdrsfile = cache_file(r->pool, conf, NULL, key, CACHE_HEADER_SUFFIX);
 
     dobj->updtimeout = conf->updtimeout;
-    dobj->removedirs = conf->removedirs;
     dobj->header_only = r->header_only;
 
     /* Open header and read basic info, wait until header contains
@@ -1292,49 +1274,6 @@ static int remove_url(cache_handle_t *h, request_rec *r)
                          "Failed to delete body file %s "
                          "from cache.", dobj->bodyfile);
             return DECLINED;
-        }
-    }
-
-    if(!dobj->removedirs) {
-        return OK;
-    }
-
-    /* now delete directories as far as possible up to our cache root */
-    if (dobj->root) {
-        const char *str_to_copy;
-
-        str_to_copy = dobj->hdrsfile ? dobj->hdrsfile : dobj->bodyfile;
-        if (str_to_copy) {
-            char *dir, *slash, *q;
-
-            dir = apr_pstrdup(r->pool, str_to_copy);
-
-            /* remove filename */
-            slash = strrchr(dir, '/');
-            *slash = '\0';
-
-            /*
-             * now walk our way back to the cache root, delete everything
-             * in the way as far as possible
-             *
-             * Note: due to the way we constructed the file names in
-             * cache_file, we are guaranteed that the cache_root is suffixed by
-             * at least one '/' which will be turned into a terminating null by
-             * this loop.  Therefore, we won't either delete or go above our
-             * cache root.
-             */
-            for (q = dir + dobj->root_len; *q ; ) {
-                 ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
-                              "Deleting directory %s from cache",
-                              dir);
-
-                 rc = apr_dir_remove(dir, r->pool);
-                 if (rc != APR_SUCCESS && !APR_STATUS_IS_ENOENT(rc)) {
-                    break;
-                 }
-                 slash = strrchr(q, '/');
-                 *slash = '\0';
-            }
         }
     }
 
@@ -2805,16 +2744,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 return rv;
             }
             dobj->file_size += written;
-            if (dobj->file_size > conf->maxfs) {
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                             "URL %s failed the size check "
-                             "(%" APR_OFF_T_FMT " > %" APR_OFF_T_FMT ")",
-                             dobj->name, dobj->file_size, conf->maxfs);
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
-                apr_file_remove(dobj->bodyfile, r->pool);
-                return APR_EGENERAL;
-            }
             /* FIXME: Add handling of max time/bytes to handle in each call
                       similar to upstream mod_cache_disk */
         }
@@ -2842,19 +2771,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                              "Discarding body for URL %s "
                              "because connection has been aborted.",
                              dobj->name);
-                /* Remove the intermediate cache file and 
-                   return non-APR_SUCCESS */
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
-                apr_file_remove(dobj->bodyfile, r->pool);
-                return APR_EGENERAL;
-            }
-
-            if (dobj->file_size < conf->minfs) {
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                             "URL %s failed the size check "
-                             "(%" APR_OFF_T_FMT " < %" APR_OFF_T_FMT ")",
-                             dobj->name, dobj->file_size, conf->minfs);
                 /* Remove the intermediate cache file and 
                    return non-APR_SUCCESS */
                 file_cache_errorcleanup(dobj, r);
@@ -2919,11 +2835,6 @@ static void *create_config(apr_pool_t *p, server_rec *s)
 {
     disk_cache_conf *conf = apr_pcalloc(p, sizeof(disk_cache_conf));
 
-    /* XXX: Set default values */
-    conf->dirlevels = DEFAULT_DIRLEVELS;
-    conf->dirlength = DEFAULT_DIRLENGTH;
-    conf->maxfs = DEFAULT_MAX_FILE_SIZE;
-    conf->minfs = DEFAULT_MIN_FILE_SIZE;
     conf->updtimeout = DEFAULT_UPDATE_TIMEOUT;
     conf->minbgsize = DEFAULT_MIN_BACKGROUND_SIZE;
 
@@ -2944,69 +2855,6 @@ static const char
     conf->cache_root = arg;
     conf->cache_root_len = strlen(arg);
     /* TODO: canonicalize cache_root and strip off any trailing slashes */
-
-    return NULL;
-}
-
-/*
- * Consider eliminating the next two directives in favor of
- * Ian's prime number hash...
- * key = hash_fn( r->uri)
- * filename = "/key % prime1 /key %prime2/key %prime3"
- */
-static const char
-*set_cache_dirlevels(cmd_parms *parms, void *in_struct_ptr, const char *arg)
-{
-    disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
-                                                 &cache_disk_largefile_module);
-    int val = atoi(arg);
-    if (val < 1)
-        return "CacheDirLevels value must be an integer greater than 0";
-    if (val * conf->dirlength > CACHEFILE_LEN)
-        return "CacheDirLevels*CacheDirLength value must not be higher than 20";
-    conf->dirlevels = val;
-    return NULL;
-}
-
-static const char
-*set_cache_dirlength(cmd_parms *parms, void *in_struct_ptr, const char *arg)
-{
-    disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
-                                                 &cache_disk_largefile_module);
-    int val = atoi(arg);
-    if (val < 1)
-        return "CacheDirLength value must be an integer greater than 0";
-    if (val * conf->dirlevels > CACHEFILE_LEN)
-        return "CacheDirLevels*CacheDirLength value must not be higher than 20";
-
-    conf->dirlength = val;
-    return NULL;
-}
-
-static const char
-*set_cache_minfs(cmd_parms *parms, void *in_struct_ptr, const char *arg)
-{
-    disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
-                                                 &cache_disk_largefile_module);
-
-    if (apr_strtoff(&conf->minfs, arg, NULL, 10) != APR_SUCCESS ||
-            conf->minfs < 0) 
-    {
-        return "CacheMinFileSize argument must be a non-negative integer representing the min size of a file to cache in bytes.";
-    }
-    return NULL;
-}
-
-static const char
-*set_cache_maxfs(cmd_parms *parms, void *in_struct_ptr, const char *arg)
-{
-    disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
-                                                 &cache_disk_largefile_module);
-    if (apr_strtoff(&conf->maxfs, arg, NULL, 10) != APR_SUCCESS ||
-            conf->maxfs < 0) 
-    {
-        return "CacheMaxFileSize argument must be a non-negative integer representing the max size of a file to cache in bytes.";
-    }
 
     return NULL;
 }
@@ -3046,44 +2894,14 @@ static const char
 }
 
 
-static const char
-*set_cache_removedirs(cmd_parms *parms, void *in_struct_ptr, const char *arg)
-{
-    disk_cache_conf *conf = ap_get_module_config(parms->server->module_config,
-                                                 &cache_disk_largefile_module);
-
-    if (strcasecmp(arg, "on") == 0 || strcasecmp(arg, "true")) {
-        conf->removedirs = TRUE;
-    }
-    else if (strcasecmp(arg, "off") == 0 || strcasecmp(arg, "false")) {
-        conf->removedirs = FALSE;
-    }
-    else {
-        return "CacheRemoveDirectories argument must be either on, true, off or false";
-    }
-
-    return NULL;
-}
-
-
 static const command_rec disk_cache_cmds[] =
 {
     AP_INIT_TAKE1("CacheRoot", set_cache_root, NULL, RSRC_CONF,
                  "The directory to store cache files"),
-    AP_INIT_TAKE1("CacheDirLevels", set_cache_dirlevels, NULL, RSRC_CONF,
-                  "The number of levels of subdirectories in the cache"),
-    AP_INIT_TAKE1("CacheDirLength", set_cache_dirlength, NULL, RSRC_CONF,
-                  "The number of characters in subdirectory names"),
-    AP_INIT_TAKE1("CacheMinFileSize", set_cache_minfs, NULL, RSRC_CONF,
-                  "The minimum file size to cache a document"),
-    AP_INIT_TAKE1("CacheMaxFileSize", set_cache_maxfs, NULL, RSRC_CONF,
-                  "The maximum file size to cache a document"),
     AP_INIT_TAKE1("CacheUpdateTimeout", set_cache_updtimeout, NULL, RSRC_CONF,
                   "Timeout in ms for cache updates"),
     AP_INIT_TAKE1("CacheMinBGSize", set_cache_minbgsize, NULL, RSRC_CONF,
                   "The minimum file size for background caching"),
-    AP_INIT_TAKE1("CacheRemoveDirectories", set_cache_removedirs, NULL, RSRC_CONF,
-                  "Should we try to remove directories when we remove expired cache files."),
     {NULL}
 };
 

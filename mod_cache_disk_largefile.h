@@ -124,12 +124,13 @@ typedef struct disk_cache_object {
 
     /* Flags */
     unsigned int skipstore:1;   /* Set if we should skip storing stuff */
-    unsigned int removedirs:1;  /* Set it we should rmdir when doing rm */
     unsigned int body_done:1;   /* Set when we're done with the body */
 
     int header_only;            /* Copy of r->header_only */
 
-    apr_interval_time_t updtimeout; /* Cache update timeout */
+    apr_interval_time_t updtimeout; /* Cache update timeout, copied from module
+                                       config which is unavailable in
+                                       recall_body() */
 
     disk_cache_info_t disk_info; /* Disk header information. */
 
@@ -142,24 +143,16 @@ typedef struct disk_cache_object {
  */
 /* TODO: Make defaults OS specific */
 #define CACHEFILE_LEN 20        /* must be less than HASH_LEN/2 */
-#define DEFAULT_DIRLEVELS 3
-#define DEFAULT_DIRLENGTH 2
-#define DEFAULT_MIN_FILE_SIZE 1
-#define DEFAULT_MAX_FILE_SIZE 1000000
-/* Background caching disabled by default */
-#define DEFAULT_MIN_BACKGROUND_SIZE DEFAULT_MAX_FILE_SIZE
+#define DEFAULT_DIRLEVELS 2
+#define DEFAULT_DIRLENGTH 1
+#define DEFAULT_MIN_BACKGROUND_SIZE 1000000
 #define DEFAULT_UPDATE_TIMEOUT apr_time_from_sec(10)
 
 typedef struct {
     const char* cache_root;
     apr_size_t cache_root_len;
-    int dirlevels;               /* Number of levels of subdirectories */
-    int dirlength;               /* Length of subdirectory names */
-    apr_off_t minfs;             /* minumum file size for cached files */
-    apr_off_t maxfs;             /* maximum file size for cached files */
     apr_off_t minbgsize;         /* minimum file size to do bg caching */
     apr_interval_time_t updtimeout;   /* Cache update timeout */
-    int removedirs;              /* Should we try to remove directories? */
 } disk_cache_conf;
 
 typedef struct diskcache_bucket_data diskcache_bucket_data;
