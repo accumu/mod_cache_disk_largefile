@@ -29,6 +29,7 @@
 #include "ap_mpm.h"
 #include "mpm_common.h"
 #include "apr_portable.h"
+#include "http_main.h"
 
 /*
  * mod_cache_disk_largefile: Disk Based HTTP 1.1 Cache.
@@ -158,7 +159,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     *len = 0;
 
     /* DEBUG
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
             "Called diskcache_bucket_read");
      */
 
@@ -215,7 +216,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     APR_BUCKET_INSERT_AFTER(e, b);
 
     /* DEBUG
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
             "diskcache_bucket_read: Converted to regular file"
             " off %" APR_OFF_T_FMT " len %" APR_SIZE_T_FMT,
             fileoffset, available);
@@ -297,13 +298,13 @@ static apr_status_t diskcache_bucket_setaside(apr_bucket *data,
 
     if (!apr_pool_is_ancestor(a->readpool, reqpool)) {
         /* FIXME: Figure out what needs to be done here */
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
                 "diskcache_bucket_setaside: FIXME1");
         a->readpool = reqpool;
     }
 
     /* FIXME: Figure out what needs to be done here */
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
             "diskcache_bucket_setaside: FIXME2");
 
     apr_file_setaside(&fd, f, reqpool);
@@ -1192,7 +1193,7 @@ static int remove_entity(cache_handle_t *h)
         return OK;
     }
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
             "remove_entity: %s", dobj->name);
 
     /* We really want to remove the cache files  here since mod_cache has
@@ -1207,7 +1208,7 @@ static int remove_entity(cache_handle_t *h)
         if(rv == APR_SUCCESS && finfo.nlink != 0) {
             p = apr_file_pool_get(dobj->hfd);
             apr_file_remove(dobj->hdrsfile, p);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
                          "remove_entity: Deleted %s from cache.",
                          dobj->hdrsfile);
         }
@@ -1221,7 +1222,7 @@ static int remove_entity(cache_handle_t *h)
         if(rv == APR_SUCCESS && finfo.nlink != 0) {
             p = apr_file_pool_get(dobj->bfd);
             apr_file_remove(dobj->bodyfile, p);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
                     "remove_entity: Deleted %s from cache.",
                     dobj->bodyfile);
         }
@@ -1501,7 +1502,7 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
 
     if(dobj->initial_size > 0 && !dobj->header_only && dobj->bfd == NULL) {
         /* This should never happen, really... */
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
                      "recall_body: Called but no fd open, URL %s "
                      "from file %s", dobj->name, dobj->bodyfile);
         return APR_EGENERAL;
@@ -1542,7 +1543,7 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
     e = apr_bucket_eos_create(bb->bucket_alloc);
     APR_BRIGADE_INSERT_TAIL(bb, e);
 
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, NULL,
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
                  "recall_body: Succeeded for URL %s from file %s",
                  dobj->name, dobj->bodyfile);
 
