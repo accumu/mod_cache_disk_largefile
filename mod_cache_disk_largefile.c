@@ -591,7 +591,6 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     dobj->initial_size = len;
     dobj->file_size = -1;
     dobj->lastmod = APR_DATE_BAD;
-    dobj->updtimeout = conf->updtimeout;
     dobj->header_only = r->header_only;
     dobj->bytes_sent = 0;
 
@@ -801,7 +800,7 @@ static apr_status_t open_header_timeout(cache_object_t *obj,
         if(rc != APR_SUCCESS) {
             return rc;
         }
-        if(finfo.mtime < (apr_time_now() - dobj->updtimeout)) {
+        if(finfo.mtime < (apr_time_now() - conf->updtimeout)) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r,
                          "Timed out waiting for header file %s for "
                          "URL %s - caching the body failed?", 
@@ -822,6 +821,9 @@ static apr_status_t load_header_strings(request_rec *r,
     apr_size_t len;
     apr_status_t rc;
     char *urlbuff;
+    disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
+                                                 &cache_disk_largefile_module);
+
 
     if(dobj->disk_info.name_len > MAX_STRING_LEN ||
             dobj->disk_info.bodyname_len > MAX_STRING_LEN ||
@@ -844,7 +846,7 @@ static apr_status_t load_header_strings(request_rec *r,
         return APR_ENOMEM;
     }
 
-    rc = file_read_timeout(dobj->hfd, urlbuff, len, dobj->updtimeout);
+    rc = file_read_timeout(dobj->hfd, urlbuff, len, conf->updtimeout);
     if (rc == APR_ETIMEDOUT) {
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                      "Timed out waiting for urlbuff for "
@@ -879,7 +881,7 @@ static apr_status_t load_header_strings(request_rec *r,
             return APR_ENOMEM;
         }
 
-        rc = file_read_timeout(dobj->hfd, bodyfile, len, dobj->updtimeout);
+        rc = file_read_timeout(dobj->hfd, bodyfile, len, conf->updtimeout);
         if (rc == APR_ETIMEDOUT) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "Timed out waiting for body cache "
@@ -905,7 +907,7 @@ static apr_status_t load_header_strings(request_rec *r,
             return APR_ENOMEM;
         }
 
-        rc = file_read_timeout(dobj->hfd, fnamebuf, len, dobj->updtimeout);
+        rc = file_read_timeout(dobj->hfd, fnamebuf, len, conf->updtimeout);
         if (rc == APR_ETIMEDOUT) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "Timed out waiting for filename for "
@@ -942,6 +944,9 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
     int flags = APR_READ|APR_BINARY;
     apr_interval_time_t delay = 0;
     cache_info *info = &(cache_obj->info);
+    disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
+                                                 &cache_disk_largefile_module);
+
     
 #if APR_HAS_SENDFILE
     core_dir_config *pdconf = ap_get_core_module_config(r->per_dir_config);
@@ -966,7 +971,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
         if(dobj->bfd == NULL) {
             rc = apr_file_open(&dobj->bfd, dobj->bodyfile, flags, 0, r->pool);
             if(rc != APR_SUCCESS) {
-                if(info->response_time < (apr_time_now() - dobj->updtimeout) ) {
+                if(info->response_time < (apr_time_now() - conf->updtimeout) ) {
                     /* This usually means that the body simply wasn't cached,
                        due to HEAD requests for example */
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
@@ -1009,7 +1014,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
            we can't rely on csize immediately after file close */
         if(finfo.valid & APR_FINFO_CSIZE && dobj->initial_size > 0 &&
                 finfo.csize == 0 &&
-                finfo.ctime < (apr_time_now() - dobj->updtimeout))
+                finfo.ctime < (apr_time_now() - conf->updtimeout))
         {
             dobj->file_size = 0;
         }
@@ -1036,7 +1041,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
         }
         else if(dobj->initial_size > dobj->file_size) {
             /* Still caching or failed? */
-            if(finfo.mtime < (apr_time_now() - dobj->updtimeout) ) {
+            if(finfo.mtime < (apr_time_now() - conf->updtimeout) ) {
                 ap_log_rerror(APLOG_MARK, APLOG_INFO, rc, r,
                              "Cached body too small for URL %s"
                              " - revalidating.", dobj->name);
@@ -1054,7 +1059,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
             if(dobj->lastmod != APR_DATE_BAD &&
                     apr_time_sec(finfo.mtime) != apr_time_sec(dobj->lastmod) &&
                     (finfo.mtime != finfo.ctime || 
-                     finfo.mtime < (apr_time_now() - dobj->updtimeout)) ) 
+                     finfo.mtime < (apr_time_now() - conf->updtimeout)) ) 
             {
                 ap_log_rerror(APLOG_MARK, APLOG_INFO, rc, r,
                              "Cached body Last-Modified mismatch "
@@ -1109,7 +1114,6 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
     dobj->hdrsfile = cache_file(r->pool, conf, NULL, key, CACHE_HEADER_SUFFIX);
 
-    dobj->updtimeout = conf->updtimeout;
     dobj->header_only = r->header_only;
 
     /* Open header and read basic info, wait until header contains
@@ -1405,6 +1409,8 @@ static apr_status_t read_table(request_rec *r,
 static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
 {
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
+    disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
+                                                 &cache_disk_largefile_module);
     apr_status_t rv;
     apr_off_t off;
     apr_finfo_t finfo;
@@ -1460,7 +1466,7 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
          * that's the case */
         rv = apr_file_info_get(&finfo, APR_FINFO_MTIME, dobj->hfd);
         if(rv != APR_SUCCESS ||
-                finfo.mtime < (apr_time_now() - dobj->updtimeout) ) 
+                finfo.mtime < (apr_time_now() - conf->updtimeout) ) 
         {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                           "Timed out waiting for cache headers "
@@ -1493,6 +1499,8 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
     apr_bucket *e;
     disk_cache_object_t *dobj = (disk_cache_object_t*) h->cache_obj->vobj;
     apr_off_t bytes_already_done;
+    disk_cache_conf *conf = ap_get_module_config(ap_server_conf->module_config,
+                                                 &cache_disk_largefile_module);
 
     if(dobj->hfd != NULL) {
         /* Close header cache file, it won't be needed anymore */
@@ -1533,7 +1541,7 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
     if(bytes_already_done < dobj->initial_size) {
         if(diskcache_brigade_insert(bb, dobj->bfd, bytes_already_done, 
                                     dobj->initial_size - bytes_already_done,
-                                    dobj->updtimeout, p
+                                    conf->updtimeout, p
                     ) == NULL) 
         {
             return APR_ENOMEM;
@@ -1894,7 +1902,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         if( dobj->disk_info.file_size >= 0 && (dobj->lastmod == APR_DATE_BAD || 
                 dobj->lastmod == dobj->disk_info.lastmod) &&
                 dobj->disk_info.expire > r->request_time &&
-                dobj->disk_info.date > info->date - dobj->updtimeout) 
+                dobj->disk_info.date > info->date - conf->updtimeout) 
         {
             dobj->skipstore = TRUE;
 
@@ -1948,7 +1956,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         /* Don't store disk headers more often than updtimeout */
         if(dobj->disk_info.file_size >= 0 &&
                 dobj->disk_info.expire > r->request_time &&
-                r->request_time < finfo.mtime + dobj->updtimeout) 
+                r->request_time < finfo.mtime + conf->updtimeout) 
         {
             dobj->skipstore = TRUE;
         }
@@ -2655,12 +2663,12 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
         if(dobj->file_size > conf->minbgsize) {
             rv = do_bgcopy(a->fd, e->start, dobj->bfd, 0, dobj->file_size,
-                           dobj->updtimeout, r->connection);
+                           conf->updtimeout, r->connection);
             did_bgcopy = TRUE;
         }
         else {
             rv = copy_body(r->pool, a->fd, e->start, dobj->bfd, 0,
-                           dobj->file_size, dobj->updtimeout);
+                           dobj->file_size, conf->updtimeout);
         }
         if(rv != APR_SUCCESS) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
