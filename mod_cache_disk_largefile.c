@@ -2667,6 +2667,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             did_bgcopy = TRUE;
         }
         else {
+            /* FIXME: Perhaps copy the body gradually using the new in/out
+                      brigades, we want to start pushing the reply to the
+                      client as soon as possible */
             rv = copy_body(r->pool, a->fd, e->start, dobj->bfd, 0,
                            dobj->file_size, conf->updtimeout);
         }
