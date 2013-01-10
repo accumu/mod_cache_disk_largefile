@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id$";
+        "$Id: mod_cache_disk_largefile.c,v 1.26 2013/01/10 21:36:15 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2920,6 +2920,14 @@ static const command_rec disk_cache_cmds[] =
     {NULL}
 };
 
+static int post_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp, 
+                       server_rec *s)
+{
+    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "%s started.", rcsid);
+
+    return OK;
+}
+
 static const cache_provider cache_disk_provider =
 {
     &remove_entity,
@@ -2934,8 +2942,10 @@ static const cache_provider cache_disk_provider =
     &invalidate_entity
 };
 
-static void disk_cache_register_hook(apr_pool_t *p)
+static void register_hooks(apr_pool_t *p)
 {
+    ap_hook_post_config(post_config, NULL, NULL, APR_HOOK_MIDDLE);
+
     /* cache initializer */
     ap_register_provider(p, CACHE_PROVIDER_GROUP, "disk_largefile", "0",
                          &cache_disk_provider);
@@ -2948,7 +2958,7 @@ AP_DECLARE_MODULE(cache_disk_largefile) = {
     create_config,              /* create per-server config structure */
     NULL,                       /* merge per-server config structures */
     disk_cache_cmds,            /* command apr_table_t */
-    disk_cache_register_hook    /* register hooks */
+    register_hooks              /* register hooks */
 };
 
 /*
