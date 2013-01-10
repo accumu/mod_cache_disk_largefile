@@ -69,6 +69,9 @@
 
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
+static const char rcsid[] = /* Add RCS version string to binary */
+        "$Id$";
+
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
 static apr_status_t store_headers(cache_handle_t *h, request_rec *r, cache_info *i);
