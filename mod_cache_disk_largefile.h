@@ -108,7 +108,8 @@ typedef struct disk_cache_object {
     const char *hdrsfile;
 
     /* Body cache file */
-    apr_file_t *bfd;
+    apr_file_t *bfd_write; /* When opened for writing (APR_EXCL) */
+    apr_file_t *bfd_read; /* When opened read-only */
     const char *bodyfile;
 
     const char *name;           /* Requested URI without vary bits - 
@@ -125,6 +126,7 @@ typedef struct disk_cache_object {
     /* Flags */
     unsigned int skipstore:1;   /* Set if we should skip storing stuff */
     unsigned int body_done:1;   /* Set when we're done with the body */
+    unsigned int can_copy_file:1; /* Set when we can do a simple file copy */
 
     int header_only;            /* Copy of r->header_only */
 
@@ -178,6 +180,7 @@ struct copyinfo {
     apr_off_t srcoff;
     /* Destination info */
     const char *destfile;
+    apr_finfo_t destinfo;
     apr_off_t destoff;
 
     /* Cache update timeout */

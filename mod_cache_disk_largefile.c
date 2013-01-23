@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.26 2013/01/10 21:36:15 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.27 2013/01/10 21:46:44 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -468,9 +468,13 @@ static apr_status_t file_cache_errorcleanup(disk_cache_object_t *dobj,
         close_and_rm(dobj->hfd, dobj->hdrsfile, r);
         dobj->hfd = NULL;
     }
-    if(dobj->bfd) {
-        close_and_rm(dobj->bfd, dobj->bodyfile, r);
-        dobj->bfd = NULL;
+    if(dobj->bfd_read) {
+        apr_file_close(dobj->bfd_read);
+        dobj->bfd_read = NULL;
+    }
+    if(dobj->bfd_write) {
+        close_and_rm(dobj->bfd_write, dobj->bodyfile, r);
+        dobj->bfd_write = NULL;
     }
     if (dobj->tfd) {
         close_and_rm(dobj->tfd, dobj->tempfile, r);
@@ -971,8 +975,8 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
      * check */
 
     while(1) {
-        if(dobj->bfd == NULL) {
-            rc = apr_file_open(&dobj->bfd, dobj->bodyfile, flags, 0, r->pool);
+        if(dobj->bfd_read == NULL) {
+            rc = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 0, r->pool);
             if(rc != APR_SUCCESS) {
                 if(info->response_time < (apr_time_now() - conf->updtimeout) ) {
                     /* This usually means that the body simply wasn't cached,
@@ -989,17 +993,20 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
             }
         }
 
+
+        /* FIXME: When we have bfd_write, verify that the bfd_read opened
+                  is the same file */
         rc = apr_file_info_get(&finfo, APR_FINFO_SIZE | APR_FINFO_CSIZE | 
                                        APR_FINFO_MTIME | APR_FINFO_CTIME |
                                        APR_FINFO_NLINK, 
-                               dobj->bfd);
+                               dobj->bfd_read);
         if(rc != APR_SUCCESS && !APR_STATUS_IS_INCOMPLETE(rc)) {
             return rc;
         }
         if(finfo.valid & APR_FINFO_NLINK && finfo.nlink == 0) {
             /* This file has been deleted, close it and try again */
-            apr_file_close(dobj->bfd);
-            dobj->bfd = NULL;
+            apr_file_close(dobj->bfd_read);
+            dobj->bfd_read = NULL;
             continue;
         }
 
@@ -1034,6 +1041,9 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
            - Body that failed caching.
            - Body newer than this header. 
          */
+
+        /* FIXME: Should we tag the header with the device/inode of the
+                  corresponding body as well? */
 
         if(dobj->initial_size < dobj->file_size) {
             ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
@@ -1161,9 +1171,9 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
                 apr_file_close(dobj->hfd);
                 dobj->hfd = NULL;
             }
-            if(dobj->bfd != NULL) {
-                apr_file_close(dobj->bfd);
-                dobj->bfd = NULL;
+            if(dobj->bfd_read != NULL) {
+                apr_file_close(dobj->bfd_read);
+                dobj->bfd_read = NULL;
             }
             return DECLINED;
         }
@@ -1222,19 +1232,19 @@ static int remove_entity(cache_handle_t *h)
         apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
     }
-    if(dobj->bfd != NULL) {
+    if(dobj->bfd_read != NULL) {
         /* Only remove file if fd isn't already unlinked. Not atomic, but
            the best we can do? */
-        rv = apr_file_info_get(&finfo, APR_FINFO_NLINK, dobj->bfd);
+        rv = apr_file_info_get(&finfo, APR_FINFO_NLINK, dobj->bfd_read);
         if(rv == APR_SUCCESS && finfo.nlink != 0) {
-            p = apr_file_pool_get(dobj->bfd);
+            p = apr_file_pool_get(dobj->bfd_read);
             apr_file_remove(dobj->bodyfile, p);
             ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
                     "remove_entity: Deleted %s from cache.",
                     dobj->bodyfile);
         }
-        apr_file_close(dobj->bfd);
-        dobj->bfd = NULL;
+        apr_file_close(dobj->bfd_read);
+        dobj->bfd_read = NULL;
     }
 
     return OK;
@@ -1458,9 +1468,9 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
                 apr_file_close(dobj->hfd);
                 dobj->hfd = NULL;
             }
-            if(dobj->bfd != NULL) {
-                apr_file_close(dobj->bfd);
-                dobj->bfd = NULL;
+            if(dobj->bfd_read != NULL) {
+                apr_file_close(dobj->bfd_read);
+                dobj->bfd_read = NULL;
             }
             return rv;
         }
@@ -1478,9 +1488,9 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
                 apr_file_close(dobj->hfd);
                 dobj->hfd = NULL;
             }
-            if(dobj->bfd != NULL) {
-                apr_file_close(dobj->bfd);
-                dobj->bfd = NULL;
+            if(dobj->bfd_read != NULL) {
+                apr_file_close(dobj->bfd_read);
+                dobj->bfd_read = NULL;
             }
             return APR_EGENERAL;
         }
@@ -1511,7 +1521,7 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
         dobj->hfd = NULL;
     }
 
-    if(dobj->initial_size > 0 && !dobj->header_only && dobj->bfd == NULL) {
+    if(dobj->initial_size > 0 && !dobj->header_only && dobj->bfd_read == NULL) {
         /* This should never happen, really... */
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
                      "recall_body: Called but no fd open, URL %s "
@@ -1530,7 +1540,7 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
     /* We need to make sure to skip the beginning of the file if we've
        already sent some bytes, e.g., due to mod_proxy */
     if(dobj->file_size > dobj->bytes_sent) {
-        if(apr_brigade_insert_file(bb, dobj->bfd, dobj->bytes_sent, 
+        if(apr_brigade_insert_file(bb, dobj->bfd_read, dobj->bytes_sent, 
                                    dobj->file_size - dobj->bytes_sent, p) == NULL) 
         {
             return APR_ENOMEM;
@@ -1542,7 +1552,7 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
 
     /* Insert any remainder as read-while-caching bucket */
     if(bytes_already_done < dobj->initial_size) {
-        if(diskcache_brigade_insert(bb, dobj->bfd, bytes_already_done, 
+        if(diskcache_brigade_insert(bb, dobj->bfd_read, bytes_already_done, 
                                     dobj->initial_size - bytes_already_done,
                                     conf->updtimeout, p
                     ) == NULL) 
@@ -2195,49 +2205,73 @@ static apr_status_t copy_body(apr_pool_t *p,
 }
 
 
-/* Provide srcfile and srcinfo containing
-   APR_FINFO_INODE|APR_FINFO_MTIME to make sure we have opened the right file
-   (someone might have just replaced it which messes up things).
+/* Provide srcfile and srcinfo containing APR_FINFO_IDENT|APR_FINFO_MTIME
+   and destfile and destinfo containing APR_FINFO_IDENT 
+   to make sure we have opened the right files
+   (someone might have just replaced them which messes up things).
 */
 static apr_status_t copy_body_nofd(apr_pool_t *p, const char *srcfile, 
                                    apr_off_t srcoff, apr_finfo_t *srcinfo,
                                    const char *destfile, apr_off_t destoff, 
-                                   apr_off_t len, 
+                                   apr_finfo_t *destinfo, apr_off_t len, 
                                    apr_interval_time_t updtimeout)
 {
     apr_status_t rc;
     apr_file_t *srcfd, *destfd;
-    apr_finfo_t finfo;
+    apr_finfo_t srcfinfo, destfinfo;
 
     rc = apr_file_open(&srcfd, srcfile, APR_READ | APR_BINARY, 0, p);
     if(rc != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_body_nofd: apr_file_open srcfd");
         return rc;
     }
-    rc = apr_file_info_get(&finfo, APR_FINFO_INODE|APR_FINFO_MTIME, srcfd);
+    rc = apr_file_info_get(&srcfinfo, APR_FINFO_IDENT | APR_FINFO_MTIME, srcfd);
     if(rc != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_body_nofd: apr_file_info_get srcfd");
         return rc;
     }
-    /* FIXME: Should probably check device too */
-    if(srcinfo->inode != finfo.inode || srcinfo->mtime < finfo.mtime) {
+    if(srcinfo->inode != srcfinfo.inode || srcinfo->device != srcfinfo.device 
+            || srcinfo->mtime < srcfinfo.mtime) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_body_nofd: src: inode/device/mtime mismatch");
         return APR_EGENERAL;
     }
 
     rc = apr_file_open(&destfd, destfile, APR_WRITE | APR_BINARY, 0, p);
     if(rc != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_body_nofd: apr_file_open destfd");
         return rc;
+    }
+    rc = apr_file_info_get(&destfinfo, APR_FINFO_IDENT, destfd);
+    if(rc != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_body_nofd: apr_file_info_get destfd");
+        return rc;
+    }
+    if(destinfo->inode != destfinfo.inode 
+            || destinfo->device != destfinfo.device) 
+    {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_body_nofd: dest: inode/device mismatch");
+        return APR_EGENERAL;
     }
 
     rc = copy_body(p, srcfd, srcoff, destfd, destoff, len, updtimeout);
     apr_file_close(srcfd);
     if(rc != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_body_nofd: copy_body");
         apr_file_close(destfd);
         return rc;
     }
 
     rc = apr_file_close(destfd);
 
-    /* Set mtime on file */
-    apr_file_mtime_set(destfile, finfo.mtime, p);
+    /* Set mtime on dest file to the one of the source file */
+    apr_file_mtime_set(destfile, srcfinfo.mtime, p);
 
     return rc;
 }
@@ -2295,7 +2329,8 @@ static void *bgcopy_thread(apr_thread_t *t, void *data)
                  ci->srcfile, ci->destfile);
 
     rc = copy_body_nofd(p, ci->srcfile, ci->srcoff, &(ci->srcinfo), 
-                        ci->destfile, ci->destoff, ci->len, ci->updtimeout);
+                        ci->destfile, ci->destoff, &(ci->destinfo),
+                        ci->len, ci->updtimeout);
 
     if(rc != APR_ETIMEDOUT && rc != APR_SUCCESS) {
         apr_file_remove(ci->destfile, p);
@@ -2374,7 +2409,7 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
     if(rv != APR_SUCCESS) {
         return rv;
     }
-    rv = apr_file_info_get(&(ci->srcinfo), APR_FINFO_INODE|APR_FINFO_MTIME,
+    rv = apr_file_info_get(&(ci->srcinfo), APR_FINFO_IDENT|APR_FINFO_MTIME,
                            srcfd);
     if(rv != APR_SUCCESS) {
         return rv;
@@ -2384,6 +2419,11 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
     if(rv != APR_SUCCESS) {
         return rv;
     }
+    rv = apr_file_info_get(&(ci->destinfo), APR_FINFO_IDENT, destfd);
+    if(rv != APR_SUCCESS) {
+        return rv;
+    }
+
 
     ci->pool = newpool;
     ci->srcfile = apr_pstrdup(newpool, srcfile);
@@ -2418,6 +2458,10 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
 #endif /* AP_MPM_WANT_SET_STACKSIZE */
 #endif /* 0 */
 
+        if (rv != APR_SUCCESS) {
+            apr_pool_destroy(newpool);
+            return rv;
+        }
         rv = apr_thread_create (&t, ta, bgcopy_thread, ci, newpool);
         if (rv != APR_SUCCESS) {
             apr_pool_destroy(newpool);
@@ -2437,12 +2481,16 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
             apr_pool_destroy(newpool);
             return APR_ENOMEM;
         }
+        if (rv != APR_SUCCESS) {
+            apr_pool_destroy(newpool);
+            return rv;
+        }
         rv = apr_proc_fork(ci->proc, newpool);
         if(rv == APR_INCHILD) {
             /* Child */
             rv = copy_body_nofd(ci->pool, ci->srcfile, ci->srcoff, 
                                 &(ci->srcinfo), ci->destfile, ci->destoff, 
-                                ci->len, ci->updtimeout);
+                                &(ci->destinfo), ci->len, ci->updtimeout);
             if(rv != APR_ETIMEDOUT && rv != APR_SUCCESS) {
                 apr_file_remove(ci->destfile, ci->pool);
             }
@@ -2478,9 +2526,10 @@ static apr_status_t replace_brigade_with_cache(cache_handle_t *h,
     apr_bucket *e;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
 
-    if(dobj->bfd) {
-        apr_file_close(dobj->bfd);
-        dobj->bfd = NULL;
+    /* FIXME: Close elsewhere now that we don't share read/write fd:s? */
+    if(dobj->bfd_write) {
+        apr_file_close(dobj->bfd_write);
+        dobj->bfd_write = NULL;
     }
 
     rv = open_body_timeout(r, h->cache_obj, dobj);
@@ -2520,13 +2569,35 @@ static apr_status_t replace_brigade_with_cache(cache_handle_t *h,
     return APR_SUCCESS;
 }
 
+static apr_status_t fileident_compare(apr_file_t *a, apr_file_t *b)
+{
+    apr_finfo_t ainfo, binfo;
+    apr_status_t rv;
+
+    rv = apr_file_info_get(&ainfo, APR_FINFO_IDENT, a);
+    if(rv != APR_SUCCESS) {
+        return rv;
+    }
+    rv = apr_file_info_get(&binfo, APR_FINFO_IDENT, b);
+    if(rv != APR_SUCCESS) {
+        return(rv);
+    }
+    if(ainfo.device != binfo.device || ainfo.inode != binfo.inode) {
+        rv = APR_EBADF;
+    }
+
+    return rv;
+}
+
 
 static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                apr_bucket_brigade *in, apr_bucket_brigade *out)
 {
-    apr_bucket *e;
-    apr_status_t rv;
-    int copy_file = FALSE, first_call = FALSE, did_bgcopy = FALSE;
+    apr_bucket *e, *fbout=NULL;
+    apr_status_t rv = APR_SUCCESS;
+    apr_pool_t *pool = NULL;
+    char *buf=NULL;
+    int first_call = FALSE, did_bgcopy = FALSE;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
                                                  &cache_disk_largefile_module);
@@ -2546,7 +2617,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     }
 
     /* Only perform these actions when called the first time */
-    if(dobj->bfd == NULL) {
+    if(dobj->bfd_write == NULL) {
         first_call = TRUE;
 
         if(dobj->lastmod != APR_DATE_BAD) {
@@ -2573,7 +2644,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             /* FIXME: We should pass the source file's size and mtime so
                open_new_file() can more reliably determine if the target
                file is current or stale. */
-            rv = open_new_file(r, dobj->bodyfile, &(dobj->bfd), conf);
+            rv = open_new_file(r, dobj->bodyfile, &(dobj->bfd_write), conf);
             if(rv == CACHE_EEXIST) {
                 /* Someone else beat us to storing this */
                 dobj->skipstore = TRUE;
@@ -2605,13 +2676,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             return APR_SUCCESS;
         }
 
-        /* Check if this is a complete single sequential file, eligable for
-         * file copy.
-         */
-        /* FIXME: Make the min size to do file copy run-time config? */
-        /* FIXME: Should probably save the copy_file status so we don't do
-                  this check on subsequent calls */
-        if(dobj->initial_size > APR_BUCKET_BUFF_SIZE &&
+        if(dobj->initial_size > conf->minbgsize &&
                 APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(in)) )
         {
             apr_off_t begin = -1;
@@ -2619,7 +2684,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             apr_file_t *fd = NULL;
             apr_bucket_file *a;
 
-            copy_file = TRUE;
+            dobj->can_copy_file = TRUE;
 
             for (e = APR_BRIGADE_FIRST(in);
                     e != APR_BRIGADE_SENTINEL(in);
@@ -2629,7 +2694,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     break;
                 }
                 if(!APR_BUCKET_IS_FILE(e)) {
-                    copy_file = FALSE;
+                    dobj->can_copy_file = FALSE;
                     break;
                 }
 
@@ -2641,185 +2706,388 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 }
 
                 if(fd != a->fd || pos != e->start) {
-                    copy_file = FALSE;
+                    dobj->can_copy_file = FALSE;
                     break;
                 }
 
                 pos += e->length;
             }
-
-            if(copy_file) {
-                dobj->file_size = pos;
+            if(dobj->initial_size != pos) {
+                /* This should never happen, really */
+                dobj->can_copy_file = FALSE;
             }
         }
     }
 
-    if(copy_file) {
-        apr_bucket_file *a;
-
+    if(first_call) {
         ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                     "Copying body for URL %s, len %"
-                     APR_OFF_T_FMT, dobj->name, dobj->file_size);
+                     "Caching body for URL %s, len %"
+                     APR_OFF_T_FMT, dobj->name, dobj->initial_size);
+    }
 
-        e = APR_BRIGADE_FIRST(in);
-        a = e->data;
-
-        if(dobj->file_size > conf->minbgsize) {
-            rv = do_bgcopy(a->fd, e->start, dobj->bfd, 0, dobj->file_size,
-                           conf->updtimeout, r->connection);
-            did_bgcopy = TRUE;
+    /* Get the last out bucket and check if it's a file bucket pointing at
+       our cachefile */
+    if(!fbout && dobj->bfd_read) {
+        fbout = APR_BRIGADE_LAST(out);
+        if(APR_BUCKET_IS_FILE(fbout)) {
+            apr_bucket_file *a = fbout->data;
+            rv = fileident_compare(a->fd, dobj->bfd_read);
+            if(rv != APR_SUCCESS) {
+                fbout = NULL;
+                rv = APR_SUCCESS;
+            }
         }
         else {
-            /* FIXME: Perhaps copy the body gradually using the new in/out
-                      brigades, we want to start pushing the reply to the
-                      client as soon as possible */
-            rv = copy_body(r->pool, a->fd, e->start, dobj->bfd, 0,
-                           dobj->file_size, conf->updtimeout);
+            fbout = NULL;
         }
-        if(rv != APR_SUCCESS) {
-            ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                         "Copying body failed, "
-                         "URL %s", dobj->name);
-            if(rv != APR_ETIMEDOUT) {
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->bodyfile, r->pool);
-            }
-            return rv;
-        }
-        dobj->body_done = TRUE;
-
     }
-    else {
-        if(first_call) {
-            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                         "Caching body for URL %s, len %"
-                         APR_OFF_T_FMT, dobj->name, dobj->initial_size);
-        }
 
-        while (!APR_BRIGADE_EMPTY(in))
-        {
-            const char *str;
-            apr_size_t length, written;
+    while (!APR_BRIGADE_EMPTY(in))
+    {
+        const char *str;
+        apr_size_t length, written=0;
 
-            e = APR_BRIGADE_FIRST(in);
+        e = APR_BRIGADE_FIRST(in);
 
-            if(dobj->body_done) {
-                APR_BUCKET_REMOVE(e);
-                APR_BRIGADE_INSERT_TAIL(out, e);
-                continue;
-            }
-
-            /* End Of Stream? */
-            if (APR_BUCKET_IS_EOS(e)) {
-                APR_BUCKET_REMOVE(e);
-                APR_BRIGADE_INSERT_TAIL(out, e);
-                dobj->body_done = TRUE;
-                continue;
-            }
-
-            /* honour flush buckets, we'll get called again */
-            if (APR_BUCKET_IS_FLUSH(e)) {
-                APR_BUCKET_REMOVE(e);
-                APR_BRIGADE_INSERT_TAIL(out, e);
-                return APR_SUCCESS;
-            }
-
-            /* Ignore the non-data-buckets */
-            if(APR_BUCKET_IS_METADATA(e)) {
-                APR_BUCKET_REMOVE(e);
-                APR_BRIGADE_INSERT_TAIL(out, e);
-                continue;
-            }
-
-            rv = apr_bucket_read(e, &str, &length, APR_BLOCK_READ);
+        if(dobj->body_done) {
             APR_BUCKET_REMOVE(e);
             APR_BRIGADE_INSERT_TAIL(out, e);
+            continue;
+        }
+
+        /* End Of Stream? */
+        if (APR_BUCKET_IS_EOS(e)) {
+            APR_BUCKET_REMOVE(e);
+            APR_BRIGADE_INSERT_TAIL(out, e);
+            dobj->body_done = TRUE;
+            continue;
+        }
+
+        /* honour flush buckets, we'll get called again */
+        if (APR_BUCKET_IS_FLUSH(e)) {
+            APR_BUCKET_REMOVE(e);
+            APR_BRIGADE_INSERT_TAIL(out, e);
+            return APR_SUCCESS;
+        }
+
+        /* Ignore the non-data-buckets */
+        if(APR_BUCKET_IS_METADATA(e)) {
+            APR_BUCKET_REMOVE(e);
+            APR_BRIGADE_INSERT_TAIL(out, e);
+            continue;
+        }
+
+        if(dobj->can_copy_file && dobj->file_size >= conf->minbgsize 
+                && APR_BUCKET_IS_FILE(e))
+        {
+            apr_bucket_file *a = e->data;
+
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                    "Doing background copy of body for URL %s, offset %"
+                    APR_OFF_T_FMT " len %" APR_OFF_T_FMT, 
+                    dobj->name, dobj->file_size, dobj->initial_size);
+
+            /* FIXME: Maybe check that e->start and dobj->file_size are
+                      identical, because they really should be */
+            rv = do_bgcopy(a->fd, e->start, 
+                           dobj->bfd_write, dobj->file_size, 
+                           dobj->initial_size-dobj->file_size, 
+                           conf->updtimeout, r->connection);
+            did_bgcopy = TRUE;
+            break;
+        }
+
+        /* FIXME: We should probably break this into reasonably sized chunks
+                  (say 1MB) that we can do fadvise(WILLNEED) on, the smaller
+                  CACHE_BUF_SIZE in the copy loop is in reality handled by the
+                  OS readahead */
+
+        if(e->length > conf->minbgsize) {
+            /* Try to split the bucket into our chunk size */
+            rv = apr_bucket_split(e, conf->minbgsize);
+            if(rv != APR_SUCCESS && !APR_STATUS_IS_ENOTIMPL(rv)) {
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                              "apr_bucket_split()");
+                break;
+            }
+        }
+
+        if(APR_BUCKET_IS_FILE(e)) {
+            apr_bucket_file *a = e->data;
+            apr_size_t len = e->length;
+            int fd_os, err;
+            apr_off_t off;
+
+            rv = apr_os_file_get(&fd_os, a->fd);
+            if(rv != APR_SUCCESS) {
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                              "apr_os_file_get()");
+                break;
+            }
+
+            off = e->start;
+            rv = apr_file_seek(a->fd, APR_SET, &off);
+            if(rv != APR_SUCCESS) {
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                              "apr_file_seek()");
+                break;
+            }
+
+#ifdef POSIX_FADV_SEQUENTIAL
+            /* We expect sequential IO */
+            err=posix_fadvise(fd_os, e->start, e->length, 
+                              POSIX_FADV_SEQUENTIAL);
+            if(err) {
+                rv = APR_FROM_OS_ERROR(err);
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                              "posix_fadvise(POSIX_FADV_SEQUENTIAL)");
+                break;
+            }
+#endif /* POSIX_FADV_SEQUENTIAL */
+
+            /* *sigh* All this just because there is no free() ... */
+            if(!pool) {
+                rv = apr_pool_create(&pool, r->pool);
+                if(rv != APR_SUCCESS) {
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                  "apr_pool_create()");
+                    break;
+                }
+            }
+            if(!buf) {
+                buf = apr_pcalloc(pool, CACHE_BUF_SIZE);
+                if(!buf && rv == APR_SUCCESS) {
+                    rv = APR_ENOMEM;
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                  "apr_palloc()");
+                    break;
+                }
+            }
+
+            while(len > 0) {
+                apr_size_t size = S_MIN(len, CACHE_BUF_SIZE);
+                rv = apr_file_read_full(a->fd, buf, size, NULL);
+                if(rv != APR_SUCCESS) {
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                  "apr_file_read_full()");
+                    break;
+                }
+
+#ifdef POSIX_FADV_DONTNEED
+                /* We will never need this segment again */
+                err=posix_fadvise(fd_os, off, size, 
+                                  POSIX_FADV_DONTNEED);
+                if(err) {
+                    rv = APR_FROM_OS_ERROR(err);
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                  "posix_fadvise(POSIX_FADV_DONTNEED)");
+                    break;
+                }
+#endif /* POSIX_FADV_DONTNEED */
+
+                off += size;
+
+#ifdef POSIX_FADV_WILLNEED
+                if(len-size > 0) {
+                    err=posix_fadvise(fd_os, off, CACHE_BUF_SIZE, 
+                                      POSIX_FADV_WILLNEED);
+                    if(err) {
+                        rv = APR_FROM_OS_ERROR(err);
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                      "posix_fadvise(POSIX_FADV_WILLNEED)");
+                        break;
+                    }
+                }
+#endif /* POSIX_FADV_WILLNEED */
+
+                rv = apr_file_write_full(dobj->bfd_write, buf, size, NULL);
+                if(rv != APR_SUCCESS) {
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                  "apr_file_write_full()");
+                    break;
+                }
+                written += size;
+                len -= size;
+            }
+            if(rv != APR_SUCCESS) {
+                break;
+            }
+        }
+        else { /* Not FILE bucket */
+            rv = apr_bucket_read(e, &str, &length, APR_BLOCK_READ);
             if (rv != APR_SUCCESS) {
-                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                             "Error when reading bucket for URL %s",
-                             dobj->name);
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
-                apr_file_remove(dobj->bodyfile, r->pool);
-                return rv;
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                              "apr_bucket_read()");
+                break;
             }
             /* don't write empty buckets to the cache */
             if (!length) {
+                APR_BUCKET_REMOVE(e);
+                APR_BRIGADE_INSERT_TAIL(out, e);
                 continue;
             }
 
-            rv = apr_file_write_full(dobj->bfd, str, length, &written);
+            rv = apr_file_write_full(dobj->bfd_write, str, length, &written);
             if (rv != APR_SUCCESS) {
-                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                             "Error when writing cache file for "
-                             "URL %s", dobj->name);
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
-                apr_file_remove(dobj->bodyfile, r->pool);
-                return rv;
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                              "apr_file_write_full()");
+                break;
             }
+        }
+        if(written > 0) {
+            if(!dobj->bfd_read) {
+                int flags = APR_READ|APR_BINARY;
+
+                /* We know the body file is OK, because we just wrote to it,
+                   so just open the file. Verify device/inode so we're sure
+                   we opened the file we wrote to though */
+
+                /* Weird, we need to allocate this file on the connection pool
+                   or we get a bad filedescriptor failure when the event MPM
+                   wants to write the reply. Shouldn't bucket brigade
+                   filedescriptors be setaside automatically? */
+                /* And, why does this seem to work for the
+                   replace_brigade_with_cache() case in this function, or
+                   doesn't it ??? */
+                rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
+                                   0, r->connection->pool);
+
+                if(rv != APR_SUCCESS) {
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                  "apr_file_open()");
+                    APR_BUCKET_REMOVE(e);
+                    APR_BRIGADE_INSERT_TAIL(out, e);
+                    break;
+                }
+                rv = fileident_compare(dobj->bfd_write, dobj->bfd_read);
+                if(rv != APR_SUCCESS) {
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                                  "bfd_write and bfd_read mismatch");
+                    APR_BUCKET_REMOVE(e);
+                    APR_BRIGADE_INSERT_TAIL(out, e);
+                    rv = APR_EBADF;
+                    break;
+                }
+            }
+            apr_bucket_delete(e);
+            if(fbout) {
+                /* Just extend the existing file cache bucket */
+                /* FIXME: This isn't large-file safe on 32bit platforms, do
+                          we really care? */
+                fbout->length += written;
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                             "URL %s extended out brigade to len %" 
+                             APR_OFF_T_FMT " off %" APR_OFF_T_FMT,
+                             dobj->name, fbout->length, fbout->start);
+            }
+            else {
+                fbout = apr_brigade_insert_file(out, dobj->bfd_read, 
+                                            dobj->file_size, written, r->pool);
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                             "URL %s added out brigade len %" APR_OFF_T_FMT
+                             " off %" APR_OFF_T_FMT,
+                             dobj->name, written, dobj->file_size);
+
+            }
+            if(!fbout) {
+                rv = APR_ENOMEM;
+                break;
+            }
+
             dobj->file_size += written;
-            /* FIXME: Add handling of max time/bytes to handle in each call
-                      similar to upstream mod_cache_disk */
+        }
+        else {
+            APR_BUCKET_REMOVE(e);
+            APR_BRIGADE_INSERT_TAIL(out, e);
+        }
+        /* FIXME: Add handling of max time/bytes to handle in each call
+           similar to upstream mod_cache_disk ? */
+    }
+
+    if(pool) {
+        apr_pool_destroy(pool);
+        pool = NULL;
+        buf = NULL;
+    }
+
+    if(did_bgcopy) {
+        dobj->bytes_sent = dobj->file_size; /* FIXME: Name is a misnomer now */
+        rv = recall_body(h, r->pool, out);
+        if(rv == APR_SUCCESS) {
+            /* Empty the in brigade */
+            apr_bucket *e  = APR_BRIGADE_FIRST(in);
+            while (e != APR_BRIGADE_SENTINEL(in)) {
+                apr_bucket *d;
+                d = e;
+                e = APR_BUCKET_NEXT(e);
+                apr_bucket_delete(d);
+            }
+            return rv;
         }
     }
 
+    if(rv != APR_SUCCESS) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                "Error during store_body for URL %s", dobj->name);
+        file_cache_errorcleanup(dobj, r);
+        apr_file_remove(dobj->hdrsfile, r->pool);
+        apr_file_remove(dobj->bodyfile, r->pool);
+        return rv;
+    }
 
     /* Drop out here if this wasn't the end */
     if (!dobj->body_done) {
         return APR_SUCCESS;
     }
 
-    if(dobj->bfd) {
-        if(!copy_file) {
+    if(dobj->bfd_write) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                     "Done caching URL %s, len %" APR_OFF_T_FMT,
+                     dobj->name, dobj->file_size);
+
+        /* FIXME: Do we really need to check r->no_cache here since we
+           checked it in the beginning? */
+        /* Assume that if we've got an initial size then bucket brigade
+           was complete and there's no danger in keeping it even if the
+           connection was aborted */
+        if (r->no_cache || (r->connection->aborted && dobj->initial_size < 0)) {
+            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
+                         "Discarding body for URL %s "
+                         "because connection has been aborted.",
+                         dobj->name);
+            /* Remove the intermediate cache file and 
+               return non-APR_SUCCESS */
+            file_cache_errorcleanup(dobj, r);
+            apr_file_remove(dobj->hdrsfile, r->pool);
+            apr_file_remove(dobj->bodyfile, r->pool);
+            return APR_EGENERAL;
+        }
+
+        if(dobj->initial_size < 0) {
+            /* Update header information now that we know the size */
+            dobj->initial_size = dobj->file_size;
+            rv = store_headers(h, r, &(h->cache_obj->info));
+            if(rv != APR_SUCCESS) {
+                file_cache_errorcleanup(dobj, r);
+                apr_file_remove(dobj->hdrsfile, r->pool);
+                apr_file_remove(dobj->bodyfile, r->pool);
+                return rv;
+            }
+        }
+        else if(dobj->initial_size != dobj->file_size) {
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                         "Done caching URL %s, len %" APR_OFF_T_FMT,
-                         dobj->name, dobj->file_size);
-
-            /* FIXME: Do we really need to check r->no_cache here since we
-               checked it in the beginning? */
-            /* Assume that if we've got an initial size then bucket brigade
-               was complete and there's no danger in keeping it even if the
-               connection was aborted */
-            if (r->no_cache || (r->connection->aborted && dobj->initial_size < 0)) {
-                ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                             "Discarding body for URL %s "
-                             "because connection has been aborted.",
-                             dobj->name);
-                /* Remove the intermediate cache file and 
-                   return non-APR_SUCCESS */
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
-                apr_file_remove(dobj->bodyfile, r->pool);
-                return APR_EGENERAL;
-            }
-
-            if(dobj->initial_size < 0) {
-                /* Update header information now that we know the size */
-                dobj->initial_size = dobj->file_size;
-                rv = store_headers(h, r, &(h->cache_obj->info));
-                if(rv != APR_SUCCESS) {
-                    file_cache_errorcleanup(dobj, r);
-                    apr_file_remove(dobj->hdrsfile, r->pool);
-                    apr_file_remove(dobj->bodyfile, r->pool);
-                    return rv;
-                }
-            }
-            else if(dobj->initial_size != dobj->file_size) {
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                             "URL %s - body size mismatch: suggested %"
-                             APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")",
-                             dobj->name, dobj->initial_size, dobj->file_size);
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
-                apr_file_remove(dobj->bodyfile, r->pool);
-                return APR_EGENERAL;
-            }
+                         "URL %s - body size mismatch: suggested %"
+                         APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")",
+                         dobj->name, dobj->initial_size, dobj->file_size);
+            file_cache_errorcleanup(dobj, r);
+            apr_file_remove(dobj->hdrsfile, r->pool);
+            apr_file_remove(dobj->bodyfile, r->pool);
+            return APR_EGENERAL;
         }
 
         /* All checks were fine, close output file */
-        rv = apr_file_close(dobj->bfd);
-        dobj->bfd = NULL;
+        rv = apr_file_close(dobj->bfd_write);
+        dobj->bfd_write = NULL;
         if(rv != APR_SUCCESS) {
             apr_file_remove(dobj->bodyfile, r->pool);
             file_cache_errorcleanup(dobj, r);
@@ -2827,19 +3095,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         }
 
         /* Set mtime on body file */
-        if(!did_bgcopy && dobj->lastmod != APR_DATE_BAD) {
+        if(dobj->lastmod != APR_DATE_BAD) {
             apr_file_mtime_set(dobj->bodyfile, dobj->lastmod, r->pool);
-        }
-
-        /* Redirect to cachefile if we copied a plain file */
-        if(copy_file) {
-            /* FIXME: Perhaps do something more elegant using the new
-                      in/out brigades, this emulates old behaviour */
-            APR_BRIGADE_CONCAT(out, in);
-            rv = replace_brigade_with_cache(h, r, out);
-            if(rv != APR_SUCCESS) {
-                return rv;
-            }
         }
     }
 
