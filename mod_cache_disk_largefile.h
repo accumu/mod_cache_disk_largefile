@@ -146,7 +146,7 @@ typedef struct disk_cache_object {
 #define DEFAULT_DIRLEVELS 2
 #define DEFAULT_DIRLENGTH 1
 
-#define DEFAULT_MIN_BACKGROUND_SIZE 1000000
+#define DEFAULT_MIN_BACKGROUND_SIZE 1048576
 #define DEFAULT_UPDATE_TIMEOUT apr_time_from_sec(10)
 
 typedef struct {
