@@ -20,6 +20,12 @@
 #include "mod_cache.h"
 #include "apr_file_io.h"
 
+#ifdef __linux
+/* Linux fallocate() can preallocate a file without changing the visible
+   filesize */
+#include <linux/falloc.h>
+#endif /* __linux */
+
 #define S_MIN(a,b) (((a)<(b))?(a):(b))
 #define S_MAX(a,b) (((a)>(b))?(a):(b))
 

@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.27 2013/01/10 21:46:44 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.28 2013/01/23 21:29:02 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2645,6 +2645,24 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                open_new_file() can more reliably determine if the target
                file is current or stale. */
             rv = open_new_file(r, dobj->bodyfile, &(dobj->bfd_write), conf);
+#ifdef __linux
+            /* Use Linux fallocate() to preallocate the file to avoid
+               fragmentation and ENOSPC surprises */
+            if(rv == APR_SUCCESS) {
+                int bfd_os;
+                rv = apr_os_file_get(&bfd_os, dobj->bfd_write);
+                if(rv == APR_SUCCESS) {
+                    if(fallocate(bfd_os, FALLOC_FL_KEEP_SIZE, 0, 
+                                 dobj->initial_size) != 0) 
+                    {
+                        /* Only choke on relevant errors */
+                        if(errno == EBADF || errno == ENOSPC || errno == EIO) {
+                            rv = APR_FROM_OS_ERROR(errno);
+                        }
+                    }
+                }
+            }
+#endif /* __linux */
             if(rv == CACHE_EEXIST) {
                 /* Someone else beat us to storing this */
                 dobj->skipstore = TRUE;
