@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.28 2013/01/23 21:29:02 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.29 2013/09/13 23:06:27 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2131,8 +2131,9 @@ static apr_status_t copy_body(apr_pool_t *p,
 
 #ifdef POSIX_FADV_WILLNEED
         if(len-size > 0) {
-            /* Tell kernel that we'll need the next segment soon */
-            err=posix_fadvise(srcfd_os, srcoff_os, CACHE_BUF_SIZE, POSIX_FADV_WILLNEED);
+            /* Tell kernel that we'll need more segments soon */
+            err=posix_fadvise(srcfd_os, srcoff_os, 2*CACHE_BUF_SIZE,
+                              POSIX_FADV_WILLNEED);
             if(err) {
                 rc = APR_FROM_OS_ERROR(err);
                 ap_log_perror(APLOG_MARK, APLOG_WARNING, rc, p,
