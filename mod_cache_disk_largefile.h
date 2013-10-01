@@ -54,6 +54,9 @@
 #define CACHE_LOOP_MINSLEEP 10000
 #define CACHE_LOOP_MAXSLEEP 1000000
 
+/* Size of window to flush when writing */
+#define CACHE_WRITE_FLUSH_WINDOW 8388608
+
 #define AP_TEMPFILE_PREFIX "/"
 #define AP_TEMPFILE_BASE   "aptmp"
 #define AP_TEMPFILE_SUFFIX "XXXXXX"

@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.29 2013/09/13 23:06:27 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.30 2013/09/13 23:24:41 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2070,8 +2070,8 @@ static apr_status_t copy_body(apr_pool_t *p,
     unsigned int i=0, freq=1;
     apr_interval_time_t minintvl = updtimeout/10;
     apr_interval_time_t maxintvl = minintvl*3;
-    int srcfd_os;
-    off64_t srcoff_os;
+    int srcfd_os, destfd_os;
+    off64_t srcoff_os, destoff_os, flushoff;
     int err;
 
     char *buf = apr_palloc(p, S_MIN(len, CACHE_BUF_SIZE));
@@ -2098,6 +2098,11 @@ static apr_status_t copy_body(apr_pool_t *p,
         return rc;
     }
 
+    rc = apr_os_file_get(&destfd_os, destfd);
+    if(rc != APR_SUCCESS) {
+        return rc;
+    }
+
 #ifdef POSIX_FADV_SEQUENTIAL
     /* We expect sequential IO */
     err=posix_fadvise(srcfd_os, 0, 0, POSIX_FADV_SEQUENTIAL);
@@ -2109,6 +2114,8 @@ static apr_status_t copy_body(apr_pool_t *p,
 #endif /* POSIX_FADV_SEQUENTIAL */
 
     srcoff_os = 0;
+    destoff_os = 0;
+    flushoff = 0;
     while(len > 0) {
         size=S_MIN(len, CACHE_BUF_SIZE);
 
@@ -2181,6 +2188,32 @@ static apr_status_t copy_body(apr_pool_t *p,
             return rc;
         }
         len -= size;
+        destoff_os += size;
+
+        if(destoff_os - flushoff >= CACHE_WRITE_FLUSH_WINDOW) {
+            /* Start flushing the current write window */
+            if(sync_file_range(destfd_os, flushoff, destoff_os - flushoff,
+                            SYNC_FILE_RANGE_WRITE) != 0)
+            {
+                return(APR_FROM_OS_ERROR(errno));
+            }
+            /* Wait for the previous window to be written to disk before
+               continuing. This is to prevent the disk write queues to be
+               chock full if incoming data rate is higher than the disks can
+               handle, which will cause horrible read latencies for other
+               requests while handling writes for this one */
+            if(flushoff >= CACHE_WRITE_FLUSH_WINDOW) {
+                if(sync_file_range(destfd_os, flushoff-CACHE_WRITE_FLUSH_WINDOW,
+                                   CACHE_WRITE_FLUSH_WINDOW,
+                                   SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER) 
+                                   != 0)
+                {
+                    return(APR_FROM_OS_ERROR(errno));
+                }
+            }
+
+            flushoff = destoff_os;
+        }
     }
 
     /* Make sure we are the one having cached the destfile */
