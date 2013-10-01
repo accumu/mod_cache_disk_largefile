@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.30 2013/09/13 23:24:41 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.31 2013/10/01 19:56:56 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2190,6 +2190,7 @@ static apr_status_t copy_body(apr_pool_t *p,
         len -= size;
         destoff_os += size;
 
+#ifdef SYNC_FILE_RANGE_WRITE
         if(destoff_os - flushoff >= CACHE_WRITE_FLUSH_WINDOW) {
             /* Start flushing the current write window */
             if(sync_file_range(destfd_os, flushoff, destoff_os - flushoff,
@@ -2214,6 +2215,7 @@ static apr_status_t copy_body(apr_pool_t *p,
 
             flushoff = destoff_os;
         }
+#endif /* SYNC_FILE_RANGE_WRITE */
     }
 
     /* Make sure we are the one having cached the destfile */
