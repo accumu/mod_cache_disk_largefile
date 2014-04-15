@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.32 2013/10/01 20:22:00 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.33 2014/04/15 09:15:46 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1193,11 +1193,11 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 }
 
 
+/* Called to abort processing using this entity */
 static int remove_entity(cache_handle_t *h)
 {
     disk_cache_object_t *dobj;
     apr_finfo_t finfo;
-    apr_pool_t *p;
     apr_status_t rv;
 
     /* Get disk cache object from cache handle */
@@ -1213,40 +1213,13 @@ static int remove_entity(cache_handle_t *h)
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
             "remove_entity: %s", dobj->name);
 
-    /* FIXME: remove_entity() is now called only to allow reneg,
-              and remove_url is ultimately called from the remove_url_filter
-              if it's deemed stale? */
-
-    /* We really want to remove the cache files  here since mod_cache has
-       deemed it stale, but it seems like an API miss that we don't
-       have a pool? And why is this function separate from remove_url?
-       Oh well, beware of kludge ;) */
+    /* FIXME: Should we use file_cache_errorcleanup() instead? */
 
     if(dobj->hfd != NULL) {
-        /* Only remove file if fd isn't already unlinked. Not atomic, but
-           the best we can do? */
-        rv = apr_file_info_get(&finfo, APR_FINFO_NLINK, dobj->hfd);
-        if(rv == APR_SUCCESS && finfo.nlink != 0) {
-            p = apr_file_pool_get(dobj->hfd);
-            apr_file_remove(dobj->hdrsfile, p);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
-                         "remove_entity: Deleted %s from cache.",
-                         dobj->hdrsfile);
-        }
         apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
     }
     if(dobj->bfd_read != NULL) {
-        /* Only remove file if fd isn't already unlinked. Not atomic, but
-           the best we can do? */
-        rv = apr_file_info_get(&finfo, APR_FINFO_NLINK, dobj->bfd_read);
-        if(rv == APR_SUCCESS && finfo.nlink != 0) {
-            p = apr_file_pool_get(dobj->bfd_read);
-            apr_file_remove(dobj->bodyfile, p);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
-                    "remove_entity: Deleted %s from cache.",
-                    dobj->bodyfile);
-        }
         apr_file_close(dobj->bfd_read);
         dobj->bfd_read = NULL;
     }
