@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.31 2013/10/01 19:56:56 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.32 2013/10/01 20:22:00 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1213,6 +1213,10 @@ static int remove_entity(cache_handle_t *h)
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
             "remove_entity: %s", dobj->name);
 
+    /* FIXME: remove_entity() is now called only to allow reneg,
+              and remove_url is ultimately called from the remove_url_filter
+              if it's deemed stale? */
+
     /* We really want to remove the cache files  here since mod_cache has
        deemed it stale, but it seems like an API miss that we don't
        have a pool? And why is this function separate from remove_url?
@@ -1657,6 +1661,8 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
                 /* Something stale that's left around */
 
                 rv = apr_file_remove(filename, r->pool);
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
+                             "open_new_file: removing old %s", filename);
                 if(rv != APR_SUCCESS && !APR_STATUS_IS_ENOENT(rv)) {
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                                  "open_new_file: Failed to "
@@ -2370,12 +2376,15 @@ static void *bgcopy_thread(apr_thread_t *t, void *data)
 
     if(rc != APR_ETIMEDOUT && rc != APR_SUCCESS) {
         apr_file_remove(ci->destfile, p);
+        ap_log_error(APLOG_MARK, APLOG_ERR, rc, ci->s,
+                     "bgcopy_thread: failed %s -> %s",
+                     ci->srcfile, ci->destfile);
     }
-
-    /* FIXME: Debug */
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ci->s,
-                 "bgcopy_thread: done %s -> %s",
-                 ci->srcfile, ci->destfile);
+    else {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ci->s,
+                     "bgcopy_thread: done %s -> %s",
+                     ci->srcfile, ci->destfile);
+    }
 
     apr_thread_exit(t, rc);
     return NULL;
@@ -3125,6 +3134,10 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 file_cache_errorcleanup(dobj, r);
                 apr_file_remove(dobj->hdrsfile, r->pool);
                 apr_file_remove(dobj->bodyfile, r->pool);
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                             "Discarded body for URL %s "
+                             "because store_headers failed",
+                             dobj->name);
                 return rv;
             }
         }
@@ -3145,6 +3158,10 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         if(rv != APR_SUCCESS) {
             apr_file_remove(dobj->bodyfile, r->pool);
             file_cache_errorcleanup(dobj, r);
+            ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                         "Discarded body for URL %s "
+                         "because close failed",
+                         dobj->name);
             return rv;
         }
 
