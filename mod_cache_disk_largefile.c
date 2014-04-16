@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.33 2014/04/15 09:15:46 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.34 2014/04/15 14:20:38 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1197,8 +1197,6 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 static int remove_entity(cache_handle_t *h)
 {
     disk_cache_object_t *dobj;
-    apr_finfo_t finfo;
-    apr_status_t rv;
 
     /* Get disk cache object from cache handle */
     dobj = (disk_cache_object_t *) h->cache_obj->vobj;
