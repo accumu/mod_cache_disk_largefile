@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.34 2014/04/15 14:20:38 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.35 2014/04/16 10:29:26 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2376,14 +2376,12 @@ static apr_status_t bgcopy_child_cleanup(void *data) {
             ap_log_error(APLOG_MARK, APLOG_ERR, status, ci->s,
                          "Background caching body %s -> %s failed",
                          ci->srcfile, ci->destfile);
-            return APR_SUCCESS;
         }
     }
     else if(status & (APR_PROC_SIGNAL | APR_PROC_SIGNAL_CORE) ) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, ci->s,
                      "Background caching body %s -> %s failed, "
                      "caught signal %d", ci->srcfile, ci->destfile, status);
-        return APR_SUCCESS;
     }
 
     /* Destroy our private pool */
