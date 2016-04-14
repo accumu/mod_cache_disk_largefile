@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.36 2016/04/08 19:34:01 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.37 2016/04/08 19:57:54 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2799,7 +2799,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         if (APR_BUCKET_IS_FLUSH(e)) {
             APR_BUCKET_REMOVE(e);
             APR_BRIGADE_INSERT_TAIL(out, e);
-            return APR_SUCCESS;
+            return APR_SUCCESS; /* FIXME: Memory leak! pool is not free:d */
         }
 
         /* Ignore the non-data-buckets */
