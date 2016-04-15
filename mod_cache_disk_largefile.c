@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.37 2016/04/08 19:57:54 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.38 2016/04/14 19:09:01 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2421,20 +2421,24 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
 
     rv = apr_file_name_get(&srcfile, srcfd);
     if(rv != APR_SUCCESS) {
+        apr_pool_destroy(newpool);
         return rv;
     }
     rv = apr_file_info_get(&(ci->srcinfo), APR_FINFO_IDENT|APR_FINFO_MTIME,
                            srcfd);
     if(rv != APR_SUCCESS) {
+        apr_pool_destroy(newpool);
         return rv;
     }
 
     rv = apr_file_name_get(&destfile, destfd);
     if(rv != APR_SUCCESS) {
+        apr_pool_destroy(newpool);
         return rv;
     }
     rv = apr_file_info_get(&(ci->destinfo), APR_FINFO_IDENT, destfd);
     if(rv != APR_SUCCESS) {
+        apr_pool_destroy(newpool);
         return rv;
     }
 
@@ -2611,7 +2615,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     apr_status_t rv = APR_SUCCESS;
     apr_pool_t *pool = NULL;
     char *buf=NULL;
-    int first_call = FALSE, did_bgcopy = FALSE;
+    int first_call = FALSE, did_bgcopy = FALSE, flush = FALSE;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
                                                  &cache_disk_largefile_module);
@@ -2799,7 +2803,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         if (APR_BUCKET_IS_FLUSH(e)) {
             APR_BUCKET_REMOVE(e);
             APR_BRIGADE_INSERT_TAIL(out, e);
-            return APR_SUCCESS; /* FIXME: Memory leak! pool is not free:d */
+            flush = TRUE;
+            break;
         }
 
         /* Ignore the non-data-buckets */
@@ -2834,6 +2839,10 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                   CACHE_BUF_SIZE in the copy loop is in reality handled by the
                   OS readahead */
 
+        /* FIXME: Splitting on minbgsize makes no sense. Should probably
+                  have a common chunking size for this, read/write fadvise()
+                  and pacing */
+
         if(e->length > conf->minbgsize) {
             /* Try to split the bucket into our chunk size */
             rv = apr_bucket_split(e, conf->minbgsize);
@@ -2850,6 +2859,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             int fd_os, err;
             apr_off_t off;
 
+            /* FIXME: Should use copy_body() instead of code duplication */
             rv = apr_os_file_get(&fd_os, a->fd);
             if(rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
@@ -2878,6 +2888,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 #endif /* POSIX_FADV_SEQUENTIAL */
 
             /* *sigh* All this just because there is no free() ... */
+            /* FIXME: Doesn't it make more sense to have this be persistent
+                      during the main object lifetime instead of doing
+                      alloc/free in the main copy loop? */
             if(!pool) {
                 rv = apr_pool_create(&pool, r->pool);
                 if(rv != APR_SUCCESS) {
@@ -2887,6 +2900,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 }
             }
             if(!buf) {
+                /* FIXME: Makes no sense to allocate large buffer for small
+                          files, do S_MIN(len, CACHE_BUF_SIZE) instead?
+                          */
                 buf = apr_pcalloc(pool, CACHE_BUF_SIZE);
                 if(!buf && rv == APR_SUCCESS) {
                     rv = APR_ENOMEM;
@@ -2952,7 +2968,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                               "apr_bucket_read()");
                 break;
             }
-            /* don't write empty buckets to the cache */
+            /* don't write empty buckets to the cache, we'll get those when
+               we encounter morphing buckets */
             if (!length) {
                 APR_BUCKET_REMOVE(e);
                 APR_BRIGADE_INSERT_TAIL(out, e);
@@ -2978,6 +2995,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                    or we get a bad filedescriptor failure when the event MPM
                    wants to write the reply. Shouldn't bucket brigade
                    filedescriptors be setaside automatically? */
+                /* FIXME: This leaks fd:s on connections doing keepalive */
                 /* And, why does this seem to work for the
                    replace_brigade_with_cache() case in this function, or
                    doesn't it ??? */
@@ -3036,10 +3054,17 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
            similar to upstream mod_cache_disk ? */
     }
 
+    /* FIXME: Makes sense to do this only when we're really done, and/or store
+              it in dobj */
     if(pool) {
         apr_pool_destroy(pool);
         pool = NULL;
         buf = NULL;
+    }
+
+    if(flush) {
+        /* honour flush buckets, we'll get called again */
+        return APR_SUCCESS;
     }
 
     if(did_bgcopy) {
