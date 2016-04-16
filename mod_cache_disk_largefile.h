@@ -43,12 +43,17 @@
 #define CACHE_BODY_SUFFIX   ".body"
 #define CACHE_VDIR_SUFFIX   ".vary"
 
-/* Size of buffer used when copying files */
-#define CACHE_BUF_SIZE 262144
+/* Size of buffer used when copying files, doesn't need to be too large as
+   we leverage fadvise() for readahead (latency hiding) */
+#define CACHE_BUF_SIZE 131072
 
 /* How much the file on disk must have grown beyond the current offset
    before diskcache_bucket_read breaks out of the stat/sleep-loop */
-#define CACHE_BUCKET_MINCHUNK 524288
+/* #define CACHE_BUCKET_MINCHUNK 524288 */
+/* Doesn't make much sense to wait for too much data, POSIX writes are atomic
+   anyway... If we get small chunks that's because the data is produced that
+   way, ie. dir indexes and whatnot. */
+#define CACHE_BUCKET_MINCHUNK 32
 
 /* How long to sleep before retrying while looping (micro-seconds) */
 #define CACHE_LOOP_MINSLEEP 10000
