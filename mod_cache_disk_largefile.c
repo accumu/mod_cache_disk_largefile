@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.38 2016/04/14 19:09:01 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.39 2016/04/15 21:06:07 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2412,6 +2412,7 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
     if (rv != APR_SUCCESS) {
         return rv;
     }
+    apr_pool_tag(newpool, "mod_cache_disk_largefile (do_bgcopy)");
 
     ci = apr_palloc(newpool, sizeof(*ci));
     if(ci == NULL) {
@@ -2839,7 +2840,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                   CACHE_BUF_SIZE in the copy loop is in reality handled by the
                   OS readahead */
 
-        /* FIXME: Splitting on minbgsize makes no sense. Should probably
+        /* FIXME: Splitting on minbgsize makes little sense, even though this
+                  only happens when bgcopy isn't possible. Should probably
                   have a common chunking size for this, read/write fadvise()
                   and pacing */
 
@@ -2898,6 +2900,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                   "apr_pool_create()");
                     break;
                 }
+                apr_pool_tag(pool, "mod_cache_disk_largefile (store_body)");
             }
             if(!buf) {
                 /* FIXME: Makes no sense to allocate large buffer for small
