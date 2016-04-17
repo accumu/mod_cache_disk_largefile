@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.40 2016/04/16 06:39:57 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.41 2016/04/17 15:31:46 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2698,17 +2698,41 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
         if(dobj->skipstore) {
             /* Someone else beat us to storing this object */
-
-            /* FIXME: Perhaps do something more elegant using the new
-                      in/out brigades, this emulates old behaviour */
-            APR_BRIGADE_CONCAT(out, in);
+            rv = APR_SUCCESS;
 
             if( dobj->initial_size > 0 &&
-                    APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(out)) )
+                    APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(in)) )
             {
                 /* Yay, we can replace the body with the cached instance */
-                return replace_brigade_with_cache(h, r, out);
+
+                rv = open_body_timeout(r, h->cache_obj, dobj);
+                if(rv == APR_SUCCESS) {
+                    /* in case we've already sent part, e.g. via mod_proxy */
+                    dobj->bytes_sent = r->bytes_sent;
+
+                    rv = recall_body(h, r->pool, out);
+                    if(rv == APR_SUCCESS) {
+                        /* We've populated out brigade, so empty the in 
+                           brigade */
+                        apr_bucket *e  = APR_BRIGADE_FIRST(in);
+                        while (e != APR_BRIGADE_SENTINEL(in)) {
+                            apr_bucket *d;
+                            d = e;
+                            e = APR_BUCKET_NEXT(e);
+                            apr_bucket_delete(d);
+                        }
+                        return APR_SUCCESS;
+                    }
+                }
             }
+            if(rv != APR_SUCCESS) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                        "Error opening bodyfile %s for URL %s",
+                        dobj->bodyfile, dobj->name);
+            }
+
+            /* Bummer, just move all buckets then */
+            APR_BRIGADE_CONCAT(out, in);
 
             return APR_SUCCESS;
         }
@@ -3102,6 +3126,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         return APR_SUCCESS;
     }
 
+    /* FIXME: bfd_write should really be set here, so add an assert/debug
+              message? */
     if(dobj->bfd_write) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "Done caching URL %s, len %" APR_OFF_T_FMT,
