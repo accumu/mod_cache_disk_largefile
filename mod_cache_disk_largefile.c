@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.39 2016/04/15 21:06:07 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.40 2016/04/16 06:39:57 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3071,6 +3071,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     }
 
     if(did_bgcopy) {
+        /* FIXME: Why does this even work? Setting bytes_sent to file_size
+                  makes recall_body to only add EOS bucket etc... */
         dobj->bytes_sent = dobj->file_size; /* FIXME: Name is a misnomer now */
         rv = recall_body(h, r->pool, out);
         if(rv == APR_SUCCESS) {
@@ -3082,7 +3084,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 e = APR_BUCKET_NEXT(e);
                 apr_bucket_delete(d);
             }
-            return rv;
+            return APR_SUCCESS;
         }
     }
 
