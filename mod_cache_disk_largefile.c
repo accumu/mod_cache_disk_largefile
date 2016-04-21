@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.42 2016/04/17 16:39:52 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.43 2016/04/21 21:40:56 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3095,20 +3095,36 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     }
 
     if(did_bgcopy) {
-        /* FIXME: Why does this even work? Setting bytes_sent to file_size
-                  makes recall_body to only add EOS bucket etc... */
-        dobj->bytes_sent = dobj->file_size; /* FIXME: Name is a misnomer now */
-        rv = recall_body(h, r->pool, out);
-        if(rv == APR_SUCCESS) {
-            /* Empty the in brigade */
-            apr_bucket *e  = APR_BRIGADE_FIRST(in);
-            while (e != APR_BRIGADE_SENTINEL(in)) {
-                apr_bucket *d;
-                d = e;
-                e = APR_BUCKET_NEXT(e);
-                apr_bucket_delete(d);
+        int flags = APR_READ|APR_BINARY;
+        /* Weird, we need to allocate this file on the connection pool
+           or we get a bad filedescriptor failure when the event MPM
+           wants to write the reply. Shouldn't bucket brigade
+           filedescriptors be setaside automatically? */
+        /* FIXME: This leaks fd:s on connections doing keepalive */
+        /* And, why does this seem to work for the
+           replace_brigade_with_cache() case in this function, or
+           doesn't it ??? */
+        rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
+                           0, r->connection->pool);
+
+        if(rv != APR_SUCCESS) {
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
+                          "apr_file_open()");
+        }
+        else {
+            dobj->bytes_sent = dobj->file_size; /* FIXME: Name is a misnomer now */
+            rv = recall_body(h, r->pool, out);
+            if(rv == APR_SUCCESS) {
+                /* Empty the in brigade */
+                apr_bucket *e  = APR_BRIGADE_FIRST(in);
+                while (e != APR_BRIGADE_SENTINEL(in)) {
+                    apr_bucket *d;
+                    d = e;
+                    e = APR_BUCKET_NEXT(e);
+                    apr_bucket_delete(d);
+                }
+                return APR_SUCCESS;
             }
-            return APR_SUCCESS;
         }
     }
 
