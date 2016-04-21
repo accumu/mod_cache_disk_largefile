@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.43 2016/04/21 21:40:56 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.44 2016/04/21 21:58:30 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2537,57 +2537,6 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
 }
 
 
-static apr_status_t replace_brigade_with_cache(cache_handle_t *h,
-                                               request_rec *r,
-                                               apr_bucket_brigade *bb)
-{
-    apr_status_t rv;
-    apr_bucket *e;
-    disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
-
-    /* FIXME: Close elsewhere now that we don't share read/write fd:s? */
-    if(dobj->bfd_write) {
-        apr_file_close(dobj->bfd_write);
-        dobj->bfd_write = NULL;
-    }
-
-    rv = open_body_timeout(r, h->cache_obj, dobj);
-    if(rv == CACHE_EDECLINED) {
-        return APR_ETIMEDOUT;
-    }
-    else if(rv != APR_SUCCESS) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                     "Error opening bodyfile %s for URL %s",
-                     dobj->bodyfile, dobj->name);
-        return rv;
-    }
-
-    /* First, empty the brigade */
-    e  = APR_BRIGADE_FIRST(bb);
-    while (e != APR_BRIGADE_SENTINEL(bb)) {
-        apr_bucket *d;
-        d = e;
-        e = APR_BUCKET_NEXT(e);
-        apr_bucket_delete(d);
-    }
-
-    /* Then, populate it with our cached instance */
-
-    /* in case we've already sent part, e.g. via mod_proxy */
-    dobj->bytes_sent = r->bytes_sent;
-
-    rv = recall_body(h, r->pool, bb);
-    if (rv != APR_SUCCESS) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                     "Error serving URL %s from cache", dobj->name);
-        return rv;
-    }
-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                 "Serving cached body for URL %s", dobj->name);
-
-    return APR_SUCCESS;
-}
-
 static apr_status_t fileident_compare(apr_file_t *a, apr_file_t *b)
 {
     apr_finfo_t ainfo, binfo;
@@ -3023,9 +2972,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                    wants to write the reply. Shouldn't bucket brigade
                    filedescriptors be setaside automatically? */
                 /* FIXME: This leaks fd:s on connections doing keepalive */
-                /* And, why does this seem to work for the
-                   replace_brigade_with_cache() case in this function, or
-                   doesn't it ??? */
                 rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
                                    0, r->connection->pool);
 
@@ -3101,9 +3047,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
            wants to write the reply. Shouldn't bucket brigade
            filedescriptors be setaside automatically? */
         /* FIXME: This leaks fd:s on connections doing keepalive */
-        /* And, why does this seem to work for the
-           replace_brigade_with_cache() case in this function, or
-           doesn't it ??? */
         rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
                            0, r->connection->pool);
 
