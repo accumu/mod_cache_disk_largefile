@@ -70,7 +70,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.41 2016/04/17 15:31:46 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.42 2016/04/17 16:39:52 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2839,7 +2839,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             continue;
         }
 
-        if(dobj->can_copy_file && dobj->file_size >= conf->minbgsize 
+        if(dobj->can_copy_file && dobj->initial_size >= conf->minbgsize 
                 && APR_BUCKET_IS_FILE(e))
         {
             apr_bucket_file *a = e->data;
