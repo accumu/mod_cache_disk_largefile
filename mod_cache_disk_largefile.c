@@ -30,6 +30,7 @@
 #include "mpm_common.h"
 #include "apr_portable.h"
 #include "http_main.h"
+#include "http_request.h"
 
 /*
  * mod_cache_disk_largefile: Disk Based HTTP 1.1 Cache.
@@ -70,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.44 2016/04/21 21:58:30 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.45 2016/04/21 22:21:58 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -161,10 +162,12 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     *str = NULL;
     *len = 0;
 
-    /* DEBUG
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
-            "Called diskcache_bucket_read");
-     */
+    if (APLOGtrace4(ap_server_conf)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                "Called diskcache_bucket_read.  block: %d  fd: %pp  "
+                "fd pool: %pp  readpool: %pp", 
+                block, f, apr_file_pool_get(f), a->readpool);
+    }
 
     while(1) {
         /* Figure out how big the file is right now, sit here until
@@ -218,12 +221,12 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     b = apr_bucket_file_create(f, fileoffset, available, a->readpool, e->list);
     APR_BUCKET_INSERT_AFTER(e, b);
 
-    /* DEBUG
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
-            "diskcache_bucket_read: Converted to regular file"
-            " off %" APR_OFF_T_FMT " len %" APR_SIZE_T_FMT,
-            fileoffset, available);
-     */
+    if (APLOGtrace4(ap_server_conf)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                "diskcache_bucket_read: Converted to regular file"
+                " off %" APR_OFF_T_FMT " len %" APR_SIZE_T_FMT,
+                fileoffset, available);
+    }
 
 
     /* Put any remains in yet another bucket */
@@ -2558,17 +2561,107 @@ static apr_status_t fileident_compare(apr_file_t *a, apr_file_t *b)
 }
 
 
+static void debug_rlog_brigade(const char *file, int line, int module_index,
+                               int level, apr_status_t status,
+                               const request_rec *r, apr_bucket_brigade *bb,
+                               const char *bbname)
+{
+    apr_bucket *db;
+    char *btype;
+    apr_file_t *fd;
+    int i = 0;
+
+    for (db = APR_BRIGADE_FIRST(bb);
+            db != APR_BRIGADE_SENTINEL(bb);
+            db = APR_BUCKET_NEXT(db), i++)
+    {
+        btype = "UNKNOWN";
+        fd = NULL;
+
+        if(BUCKET_IS_DISKCACHE(db)) {
+            diskcache_bucket_data *a = db->data;
+            fd = a->fd;
+            btype = "DISKCACHE";
+        }
+        else if(APR_BUCKET_IS_FILE(db)) {
+            apr_bucket_file *a = db->data;
+            fd = a->fd;
+            btype = "FILE";
+        }
+        else if(APR_BUCKET_IS_HEAP(db)) {
+            btype = "HEAP";
+        }
+        else if(APR_BUCKET_IS_EOS(db)) {
+            btype = "EOS";
+        }
+        else if(APR_BUCKET_IS_FLUSH(db)) {
+            btype = "FLUSH";
+        }
+        else if(APR_BUCKET_IS_METADATA(db)) {
+            btype = "METADATA";
+        }
+        else if(AP_BUCKET_IS_EOR(db)) {
+            btype = "EOR";
+        }
+        else if(APR_BUCKET_IS_MMAP(db)) {
+            btype = "MMAP";
+        }
+        else if(APR_BUCKET_IS_PIPE(db)) {
+            btype = "PIPE";
+        }
+        else if(APR_BUCKET_IS_SOCKET(db)) {
+            btype = "SOCKET";
+        }
+        else if(APR_BUCKET_IS_TRANSIENT(db)) {
+            btype = "TRANSIENT";
+        }
+        else if(APR_BUCKET_IS_IMMORTAL(db)) {
+            btype = "IMMORTAL";
+        }
+        else if(APR_BUCKET_IS_POOL(db)) {
+            btype = "POOL";
+        }
+
+        if(fd) {
+            const char *fname=NULL;
+            apr_file_name_get(&fname, fd);
+
+            ap_log_rerror(file, line, module_index, level, status, r,
+                         "%s bucket %d: type %s  length %" APR_OFF_T_FMT "  "
+                         "fd %pp  fdpool %pp  fdname %s",
+                         bbname, i, btype, db->length,
+                         fd, apr_file_pool_get(fd), fname);
+        }
+        else {
+            ap_log_rerror(file, line, module_index, level, status, r,
+                         "%s bucket %d: type %s length %" APR_OFF_T_FMT,
+                         bbname, i, btype, db->length);
+        }
+
+    }
+}
+
+
 static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                apr_bucket_brigade *in, apr_bucket_brigade *out)
 {
     apr_bucket *e, *fbout=NULL;
     apr_status_t rv = APR_SUCCESS;
-    apr_pool_t *pool = NULL;
+    apr_pool_t *pool = NULL, *fdpool = NULL;
     char *buf=NULL;
     int first_call = FALSE, did_bgcopy = FALSE, flush = FALSE;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
                                                  &cache_disk_largefile_module);
+
+    if (APLOGrtrace1(r)) {
+
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "pools: r: %pp  "
+                "conn: %pp  in->p: %pp  out->p: %pp",
+                r->pool, r->connection->pool, in->p, out->p);
+
+        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE1, 0, r, in, "in");
+    }
 
     if(r->no_cache) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
@@ -2582,6 +2675,20 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         /* Don't waste a body cachefile on a 0 length body */
         APR_BRIGADE_CONCAT(out, in);
         return APR_SUCCESS;
+    }
+
+    /* This is is plain weird. In some cases, for example a dir index, the
+       first call to store_body() has a different in->p pool. When this is
+       the case, allocating fd:s from r->pool yields a Bad File Descriptor
+       error in the core output filter for some reason. However, it does
+       work to allocate the fd on the connection pool instead. To avoid
+       collecting multiple fds on a connection, for example during keepalive,
+       we do this only when necessary */
+    if(r->pool == in->p) {
+        fdpool = r->pool;
+    }
+    else {
+        fdpool = r->connection->pool;
     }
 
     /* Only perform these actions when called the first time */
@@ -2963,17 +3070,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             if(!dobj->bfd_read) {
                 int flags = APR_READ|APR_BINARY;
 
-                /* We know the body file is OK, because we just wrote to it,
-                   so just open the file. Verify device/inode so we're sure
-                   we opened the file we wrote to though */
-
-                /* Weird, we need to allocate this file on the connection pool
-                   or we get a bad filedescriptor failure when the event MPM
-                   wants to write the reply. Shouldn't bucket brigade
-                   filedescriptors be setaside automatically? */
-                /* FIXME: This leaks fd:s on connections doing keepalive */
                 rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
-                                   0, r->connection->pool);
+                                   0, fdpool);
 
                 if(rv != APR_SUCCESS) {
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
@@ -3042,13 +3140,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
     if(did_bgcopy) {
         int flags = APR_READ|APR_BINARY;
-        /* Weird, we need to allocate this file on the connection pool
-           or we get a bad filedescriptor failure when the event MPM
-           wants to write the reply. Shouldn't bucket brigade
-           filedescriptors be setaside automatically? */
-        /* FIXME: This leaks fd:s on connections doing keepalive */
+
         rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
-                           0, r->connection->pool);
+                           0, fdpool);
 
         if(rv != APR_SUCCESS) {
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
@@ -3066,7 +3160,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     e = APR_BUCKET_NEXT(e);
                     apr_bucket_delete(d);
                 }
-                return APR_SUCCESS;
             }
         }
     }
@@ -3078,6 +3171,14 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         apr_file_remove(dobj->hdrsfile, r->pool);
         apr_file_remove(dobj->bodyfile, r->pool);
         return rv;
+    }
+
+    if (APLOGrtrace1(r)) {
+        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE1, 0, r, out, "out");
+    }
+
+    if(did_bgcopy) {
+        return APR_SUCCESS;
     }
 
     /* Drop out here if this wasn't the end */
