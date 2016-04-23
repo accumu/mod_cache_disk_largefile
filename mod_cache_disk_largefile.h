@@ -157,6 +157,10 @@ typedef struct disk_cache_object {
     disk_cache_info_t disk_info; /* Disk header information. */
 
     apr_off_t bytes_sent; /* Copy of r->bytes_sent before calling recall_body */
+
+    apr_pool_t *tpool;          /* Temporary pool, used while processing */
+    char *tbuf;                 /* Temporary buffer */
+    apr_size_t tbufsize;        /* Size of temp buffer */
 } disk_cache_object_t;
 
 

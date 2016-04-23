@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.47 2016/04/23 15:39:06 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.48 2016/04/23 16:49:39 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -601,6 +601,7 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
                                                  &cache_disk_largefile_module);
     cache_object_t *obj;
     disk_cache_object_t *dobj;
+    apr_status_t rv;
 
     if (conf->cache_root == NULL) {
         return DECLINED;
@@ -619,6 +620,14 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     obj->vobj = dobj = apr_pcalloc(r->pool, sizeof(*dobj));
 
     obj->key = apr_pstrdup(r->pool, key);
+
+    rv = apr_pool_create(&(dobj->tpool), r->pool);
+    if(rv != APR_SUCCESS) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
+                     "Unable to create temporary pool");
+        return DECLINED;
+    }
+    dobj->tbuf = NULL;
 
     dobj->name = obj->key;
     /* Save the cache root */
@@ -879,7 +888,7 @@ static apr_status_t load_header_strings(request_rec *r,
 
 
     len = dobj->disk_info.name_len;
-    urlbuff = apr_palloc(r->pool, len+1);
+    urlbuff = apr_palloc(dobj->tpool, len+1);
     if(urlbuff == NULL) {
         return APR_ENOMEM;
     }
@@ -913,7 +922,7 @@ static apr_status_t load_header_strings(request_rec *r,
     /* Read in the file the body is stored in */
     len = dobj->disk_info.bodyname_len;
     if(len > 0) {
-        char *bodyfile = apr_palloc(r->pool, len+1);
+        char *bodyfile = apr_palloc(dobj->tpool, len+1);
 
         if(bodyfile == NULL) {
             return APR_ENOMEM;
@@ -1152,6 +1161,14 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     dobj = apr_pcalloc(r->pool, sizeof(disk_cache_object_t));
     info = &(obj->info);
 
+    rc = apr_pool_create(&(dobj->tpool), r->pool);
+    if(rc != APR_SUCCESS) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                     "Unable to create temporary pool");
+        return DECLINED;
+    }
+    dobj->tbuf = NULL;
+
     /* Save the cache root */
     dobj->root = apr_pstrndup(r->pool, conf->cache_root, conf->cache_root_len);
     dobj->root_len = conf->cache_root_len;
@@ -1251,6 +1268,12 @@ static int remove_entity(cache_handle_t *h)
     if(dobj->bfd_read != NULL) {
         apr_file_close(dobj->bfd_read);
         dobj->bfd_read = NULL;
+    }
+
+    if(dobj->tpool != NULL) {
+        dobj->tbuf = NULL;
+        apr_pool_destroy(dobj->tpool);
+        dobj->tpool = NULL;
     }
 
     return OK;
@@ -1570,6 +1593,12 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
     e = apr_bucket_eos_create(bb->bucket_alloc);
     APR_BRIGADE_INSERT_TAIL(bb, e);
 
+    if(dobj->tpool != NULL) {
+        dobj->tbuf = NULL;
+        apr_pool_destroy(dobj->tpool);
+        dobj->tpool = NULL;
+    }
+
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
                  "recall_body: Succeeded for URL %s from file %s",
                  dobj->name, dobj->bodyfile);
@@ -1582,7 +1611,7 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
  *                 totsize of data, consisting of key\0value\0...key\0value\0
  */
 static apr_status_t store_table(apr_file_t *fd, apr_table_t *table,
-                                request_rec *r)
+                                apr_pool_t *pool)
 {
     int i, nelts, niov;
     apr_status_t rv = APR_SUCCESS;
@@ -1594,7 +1623,7 @@ static apr_status_t store_table(apr_file_t *fd, apr_table_t *table,
 
     /* Allocate space for the size-header plus two elements per table entry */
 
-    iov = apr_palloc(r->pool, (1+nelts*2) * sizeof(struct iovec));
+    iov = apr_palloc(pool, (1+nelts*2) * sizeof(struct iovec));
     if(iov == NULL) {
         return APR_ENOMEM;
     }
@@ -1860,7 +1889,7 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
 
         headers_out = ap_cache_cacheable_headers_out(r);
 
-        rv = store_table(dobj->hfd, headers_out, r);
+        rv = store_table(dobj->hfd, headers_out, dobj->tpool);
         if (rv != APR_SUCCESS) {
             file_cache_errorcleanup(dobj, r);
             return rv;
@@ -1874,7 +1903,7 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
 
         headers_in = ap_cache_cacheable_headers_in(r);
 
-        rv = store_table(dobj->hfd, headers_in, r);
+        rv = store_table(dobj->hfd, headers_in, dobj->tpool);
         if (rv != APR_SUCCESS) {
             file_cache_errorcleanup(dobj, r);
             return rv;
@@ -2675,8 +2704,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 {
     apr_bucket *e, *fbout=NULL;
     apr_status_t rv = APR_SUCCESS;
-    apr_pool_t *pool = NULL, *fdpool = NULL;
-    char *buf=NULL;
+    apr_pool_t *fdpool = NULL;
     int first_call = FALSE, did_bgcopy = FALSE, flush = FALSE;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
@@ -2997,35 +3025,26 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             }
 #endif /* POSIX_FADV_SEQUENTIAL */
 
-            /* *sigh* All this just because there is no free() ... */
-            /* FIXME: Doesn't it make more sense to have this be persistent
-                      during the main object lifetime instead of doing
-                      alloc/free in the main copy loop? */
-            if(!pool) {
-                rv = apr_pool_create(&pool, r->pool);
-                if(rv != APR_SUCCESS) {
-                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                                  "apr_pool_create()");
-                    break;
+            if(dobj->tbuf == NULL) {
+                /* Use large buffer for non-dynamic content */
+                if(dobj->initial_size > 0) {
+                    dobj->tbufsize = S_MIN(dobj->initial_size, CACHE_BUF_SIZE);
                 }
-                apr_pool_tag(pool, "mod_cache_disk_largefile (store_body)");
-            }
-            if(!buf) {
-                /* FIXME: Makes no sense to allocate large buffer for small
-                          files, do S_MIN(len, CACHE_BUF_SIZE) instead?
-                          */
-                buf = apr_pcalloc(pool, CACHE_BUF_SIZE);
-                if(!buf && rv == APR_SUCCESS) {
+                else {
+                    dobj->tbufsize = APR_BUCKET_BUFF_SIZE;
+                }
+                dobj->tbuf = apr_pcalloc(dobj->tpool, CACHE_BUF_SIZE);
+                if(dobj->tbuf == NULL && rv == APR_SUCCESS) {
                     rv = APR_ENOMEM;
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                                  "apr_palloc()");
+                                  "apr_pcalloc()");
                     break;
                 }
             }
 
             while(len > 0) {
-                apr_size_t size = S_MIN(len, CACHE_BUF_SIZE);
-                rv = apr_file_read_full(a->fd, buf, size, NULL);
+                apr_size_t size = S_MIN(len, dobj->tbufsize);
+                rv = apr_file_read_full(a->fd, dobj->tbuf, size, NULL);
                 if(rv != APR_SUCCESS) {
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
                                   "apr_file_read_full()");
@@ -3059,7 +3078,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 }
 #endif /* POSIX_FADV_WILLNEED */
 
-                rv = apr_file_write_full(dobj->bfd_write, buf, size, NULL);
+                rv = apr_file_write_full(dobj->bfd_write, dobj->tbuf, size, NULL);
                 if(rv != APR_SUCCESS) {
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
                                   "apr_file_write_full()");
@@ -3151,14 +3170,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         }
         /* FIXME: Add handling of max time/bytes to handle in each call
            similar to upstream mod_cache_disk ? */
-    }
-
-    /* FIXME: Makes sense to do this only when we're really done, and/or store
-              it in dobj */
-    if(pool) {
-        apr_pool_destroy(pool);
-        pool = NULL;
-        buf = NULL;
     }
 
     if(flush) {
@@ -3282,6 +3293,12 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         if(dobj->lastmod != APR_DATE_BAD) {
             apr_file_mtime_set(dobj->bodyfile, dobj->lastmod, r->pool);
         }
+    }
+
+    if(dobj->tpool != NULL) {
+        dobj->tbuf = NULL;
+        apr_pool_destroy(dobj->tpool);
+        dobj->tpool = NULL;
     }
 
     return APR_SUCCESS;
