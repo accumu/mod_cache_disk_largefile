@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.46 2016/04/23 12:42:40 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.47 2016/04/23 15:39:06 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -137,7 +137,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     apr_size_t filelength = e->length; /* bytes remaining in file past offset */
     apr_off_t fileoffset = e->start;
     apr_size_t available;
-    apr_time_t start = apr_time_now();
+    apr_time_t start = apr_time_now(), preferwait;
 #if APR_HAS_THREADS && !APR_HAS_XTHREAD_FILES
     apr_int32_t flags;
 #endif
@@ -165,8 +165,10 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     if (APLOGtrace4(ap_server_conf)) {
         ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
                 "Called diskcache_bucket_read.  block: %d  fd: %pp  "
-                "fd pool: %pp  readpool: %pp", 
-                block, f, apr_file_pool_get(f), a->readpool);
+                "fd pool: %pp  readpool: %pp  "
+                "lastdata: %" APR_TIME_T_FMT ".%" APR_TIME_T_FMT, 
+                block, f, apr_file_pool_get(f), a->readpool, 
+                apr_time_sec(a->lastdata), apr_time_usec(a->lastdata));
     }
 
     while(1) {
@@ -178,7 +180,25 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
             return rv;
         }
 
-        if(finfo.size >= fileoffset + S_MIN(filelength, CACHE_BUCKET_MINCHUNK)) {
+        /* Always be content if we reach our preferred chunk size */
+        if(finfo.size >= 
+                fileoffset + S_MIN(filelength, CACHE_BUCKET_PREFERCHUNK)) 
+        {
+            break;
+        }
+
+        /* In a pinch, deliver what's there after preferwait microseconds since
+           the last time we returned data */
+        if(block == APR_NONBLOCK_READ) {
+            preferwait = CACHE_BUCKET_PREFERWAIT_NONBLOCK;
+        }
+        else {
+            preferwait = CACHE_BUCKET_PREFERWAIT_BLOCK;
+        }
+        if(finfo.size >= fileoffset + S_MIN(filelength, CACHE_BUCKET_MINCHUNK)
+                &&
+                a->lastdata + preferwait < apr_time_now()) 
+        {
             break;
         }
 
@@ -221,6 +241,9 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     b = apr_bucket_file_create(f, fileoffset, available, a->readpool, e->list);
     APR_BUCKET_INSERT_AFTER(e, b);
 
+    /* Record that we returned data */
+    a->lastdata = apr_time_now();
+
     if (APLOGtrace4(ap_server_conf)) {
         ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
                 "diskcache_bucket_read: Converted to regular file"
@@ -247,7 +270,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
         diskcache_bucket_destroy(a);
         if (APLOGtrace4(ap_server_conf)) {
             ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
-                    "diskcache_bucket_read done with this bucket.");
+                    "diskcache_bucket_read: done with this bucket.");
         }
     }
 
@@ -269,6 +292,7 @@ static apr_bucket * diskcache_bucket_make(apr_bucket *b,
     f->readpool = p;
     f->updtimeout = timeout;
     f->polldelay = 0;
+    f->lastdata = 0;
 
     b = apr_bucket_shared_make(b, f, offset, len);
     b->type = &bucket_type_diskcache;
