@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.45 2016/04/21 22:21:58 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.46 2016/04/23 12:42:40 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -245,6 +245,10 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     }
     else {
         diskcache_bucket_destroy(a);
+        if (APLOGtrace4(ap_server_conf)) {
+            ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                    "diskcache_bucket_read done with this bucket.");
+        }
     }
 
     *str = buf;
