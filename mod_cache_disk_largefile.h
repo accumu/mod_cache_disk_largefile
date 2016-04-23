@@ -49,22 +49,25 @@
 
 /* How much the file on disk must have grown beyond the current offset
    before diskcache_bucket_read breaks out of the stat/sleep-loop */
+
 /* #define CACHE_BUCKET_MINCHUNK 524288 */
 /* Doesn't make much sense to wait for too much data, POSIX writes are atomic
    anyway... If we get small chunks that's because the data is produced that
    way, ie. dir indexes and whatnot. */
 #define CACHE_BUCKET_MINCHUNK 32
 
-/* The maximum size of a chunk that diskcache_bucket_read returns. Limiting
-   this allows us to be called frequently in order to return the entire
-   diskcache bucket as a file bucket as soon as possible. As file buckets
-   are special and the event mpm can do async writes on them we want this
-   to happen as soon as possible instead of wasting worker threads */
-#define CACHE_BUCKET_MAXCHUNK 8388608
+/* Our preferred chunksize, avoid cluttering things up with tiny chunks
+   if possible */
+#define CACHE_BUCKET_PREFERCHUNK 33554432
+
+/* How long to wait for the preferred sized chunks (micro-seconds), lets
+   use different timeouts for blocking and non-blocking bucket reads... */
+#define CACHE_BUCKET_PREFERWAIT_NONBLOCK 1000000
+#define CACHE_BUCKET_PREFERWAIT_BLOCK 10000
 
 /* How long to sleep before retrying while looping (micro-seconds) */
-#define CACHE_LOOP_MINSLEEP 10000
-#define CACHE_LOOP_MAXSLEEP 1000000
+#define CACHE_LOOP_MINSLEEP 4000
+#define CACHE_LOOP_MAXSLEEP 100000
 
 /* Size of window to flush when writing */
 #define CACHE_WRITE_FLUSH_WINDOW 8388608
@@ -189,6 +192,8 @@ struct diskcache_bucket_data {
     apr_interval_time_t updtimeout;
     /* Adaptive loop delay timeout */
     apr_interval_time_t polldelay;
+    /* The last time we returned data */
+    apr_time_t lastdata;
 };
 
 /* Stuff needed by the background copy thread */
