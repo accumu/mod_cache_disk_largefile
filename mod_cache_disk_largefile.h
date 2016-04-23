@@ -55,6 +55,13 @@
    way, ie. dir indexes and whatnot. */
 #define CACHE_BUCKET_MINCHUNK 32
 
+/* The maximum size of a chunk that diskcache_bucket_read returns. Limiting
+   this allows us to be called frequently in order to return the entire
+   diskcache bucket as a file bucket as soon as possible. As file buckets
+   are special and the event mpm can do async writes on them we want this
+   to happen as soon as possible instead of wasting worker threads */
+#define CACHE_BUCKET_MAXCHUNK 8388608
+
 /* How long to sleep before retrying while looping (micro-seconds) */
 #define CACHE_LOOP_MINSLEEP 10000
 #define CACHE_LOOP_MAXSLEEP 1000000
