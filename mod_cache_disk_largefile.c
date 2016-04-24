@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.50 2016/04/24 08:05:13 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.51 2016/04/24 08:19:54 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2362,10 +2362,11 @@ static apr_status_t bgcopy_thread_cleanup(void *data)
     apr_status_t rc, ret;
     apr_pool_t *p;
 
-    /* FIXME: Debug */
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ci->s,
-                 "bgcopy_thread_cleanup: %s -> %s",
-                 ci->srcfile, ci->destfile);
+    if (APLOGtrace2(ci->s)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, ci->s,
+                     "bgcopy_thread_cleanup: called for %s -> %s",
+                     ci->srcfile, ci->destfile);
+    }
 
     rc = apr_thread_join(&ret, ci->t);
     if(rc != APR_SUCCESS) {
@@ -2380,10 +2381,11 @@ static apr_status_t bgcopy_thread_cleanup(void *data)
                      ci->srcfile, ci->destfile);
     }
 
-    /* FIXME: Debug */
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ci->s,
-                 "bgcopy_thread_cleanup: SUCCESS %s -> %s",
-                 ci->srcfile, ci->destfile);
+    if (APLOGtrace1(ci->s)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ci->s,
+                "bgcopy_thread_cleanup: SUCCESS %s -> %s",
+                ci->srcfile, ci->destfile);
+    }
 
     /* Destroy our private pool */
     p = ci->pool;
@@ -2401,10 +2403,11 @@ static void *bgcopy_thread(apr_thread_t *t, void *data)
 
     p = apr_thread_pool_get(t);
 
-    /* FIXME: Debug */
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ci->s,
-                 "bgcopy_thread: start %s -> %s",
-                 ci->srcfile, ci->destfile);
+    if (APLOGtrace1(ci->s)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ci->s,
+                     "bgcopy_thread: start %s -> %s",
+                     ci->srcfile, ci->destfile);
+    }
 
     rc = copy_body_nofd(p, ci->srcfile, ci->srcoff, &(ci->srcinfo), 
                         ci->destfile, ci->destoff, &(ci->destinfo),
