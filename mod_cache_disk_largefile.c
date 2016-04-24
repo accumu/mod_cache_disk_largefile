@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.49 2016/04/23 22:18:34 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.50 2016/04/24 08:05:13 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -82,22 +82,6 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r);
 static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_brigade *bb);
 static apr_status_t read_array(request_rec *r, apr_array_header_t* arr,
                                apr_file_t *file);
-
-
-#define CACHE_LOOP_INCTIME(x) x <<= 1
-#define CACHE_LOOP_DECTIME(x) x >>= 1
-
-static void cache_loop_sleep(apr_interval_time_t *t) {
-
-    if(*t < CACHE_LOOP_MINSLEEP) {
-        *t = CACHE_LOOP_MINSLEEP;
-    }
-    else if(*t > CACHE_LOOP_MAXSLEEP) {
-        *t = CACHE_LOOP_MAXSLEEP;
-    }
-
-    apr_sleep(*t);
-}
 
 
 /*
@@ -143,6 +127,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     apr_off_t fileoffset = e->start;
     apr_size_t available;
     apr_time_t start = apr_time_now();
+    apr_interval_time_t loopdelay = CACHE_LOOP_MINSLEEP;
 #if APR_HAS_THREADS && !APR_HAS_XTHREAD_FILES
     apr_int32_t flags;
 #endif
@@ -229,13 +214,12 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
             break;
         }
 
-        /* Increase loop delay on each pass */
-        cache_loop_sleep(&(a->polldelay));
-        CACHE_LOOP_INCTIME(a->polldelay);
+        apr_sleep(loopdelay);
+        loopdelay <<= 1;
+        if(loopdelay > CACHE_LOOP_MAXSLEEP) {
+            loopdelay = CACHE_LOOP_MAXSLEEP;
+        }
     }
-    /* Decrease the loop delay a notch so the stored value is the actual
-       delay needed */
-    CACHE_LOOP_DECTIME(a->polldelay);
 
     /* Convert this bucket to a zero-length heap bucket so we won't be called
        again */
@@ -297,7 +281,6 @@ static apr_bucket * diskcache_bucket_make(apr_bucket *b,
     f->fd = fd;
     f->readpool = p;
     f->updtimeout = timeout;
-    f->polldelay = 0;
     f->lastdata = 0;
 
     b = apr_bucket_shared_make(b, f, offset, len);
@@ -681,7 +664,7 @@ static apr_status_t file_read_timeout(apr_file_t *file, char * buf,
     apr_size_t left, done;
     apr_finfo_t finfo;
     apr_status_t rc;
-    apr_interval_time_t delay=0;
+    apr_interval_time_t loopdelay=CACHE_LOOP_MINSLEEP;
 
     done = 0;
     left = len;
@@ -704,8 +687,11 @@ static apr_status_t file_read_timeout(apr_file_t *file, char * buf,
         if(finfo.mtime < (apr_time_now() - timeout) ) {
             return APR_ETIMEDOUT;
         }
-        cache_loop_sleep(&delay);
-        CACHE_LOOP_INCTIME(delay);
+        apr_sleep(loopdelay);
+        loopdelay <<= 1;
+        if(loopdelay > CACHE_LOOP_MAXSLEEP) {
+            loopdelay = CACHE_LOOP_MAXSLEEP;
+        }
     }
 
     return APR_SUCCESS;
@@ -820,7 +806,7 @@ static apr_status_t open_header_timeout(cache_object_t *obj,
 {
     apr_status_t rc;
     apr_finfo_t finfo;
-    apr_interval_time_t delay = 0;
+    apr_interval_time_t loopdelay=CACHE_LOOP_MINSLEEP;
 
     while(1) {
         if(dobj->hfd) {
@@ -855,8 +841,11 @@ static apr_status_t open_header_timeout(cache_object_t *obj,
                          dobj->hdrsfile, key);
             return CACHE_EDECLINED;
         }
-        cache_loop_sleep(&delay);
-        CACHE_LOOP_INCTIME(delay);
+        apr_sleep(loopdelay);
+        loopdelay <<= 1;
+        if(loopdelay > CACHE_LOOP_MAXSLEEP) {
+            loopdelay = CACHE_LOOP_MAXSLEEP;
+        }
     }
 
     return APR_SUCCESS;
@@ -990,7 +979,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
     apr_status_t rc;
     apr_finfo_t finfo;
     int flags = APR_READ|APR_BINARY;
-    apr_interval_time_t delay = 0;
+    apr_interval_time_t loopdelay=CACHE_LOOP_MINSLEEP;
     cache_info *info = &(cache_obj->info);
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
                                                  &cache_disk_largefile_module);
@@ -1028,8 +1017,13 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
                                  dobj->bodyfile, dobj->name);
                     return CACHE_EDECLINED;
                 }
-                cache_loop_sleep(&delay);
-                CACHE_LOOP_INCTIME(delay);
+
+                apr_sleep(loopdelay);
+                loopdelay <<= 1;
+                if(loopdelay > CACHE_LOOP_MAXSLEEP) {
+                    loopdelay = CACHE_LOOP_MAXSLEEP;
+                }
+
                 continue;
             }
         }
@@ -1126,8 +1120,13 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
         if(dobj->file_size > 0) {
             break;
         }
-        cache_loop_sleep(&delay);
-        CACHE_LOOP_INCTIME(delay);
+
+        apr_sleep(loopdelay);
+        loopdelay <<= 1;
+        if(loopdelay > CACHE_LOOP_MAXSLEEP) {
+            loopdelay = CACHE_LOOP_MAXSLEEP;
+        }
+
     }
 
     return APR_SUCCESS;
@@ -1457,7 +1456,7 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
     apr_status_t rv;
     apr_off_t off;
     apr_finfo_t finfo;
-    apr_interval_time_t delay = 0;
+    apr_interval_time_t loopdelay=CACHE_LOOP_MINSLEEP;
 
     /* This case should not happen... */
     if (!dobj->hfd) {
@@ -1528,8 +1527,13 @@ static apr_status_t recall_headers(cache_handle_t *h, request_rec *r)
         if(rv != APR_SUCCESS) {
             return rv;
         }
-        cache_loop_sleep(&delay);
-        CACHE_LOOP_INCTIME(delay);
+
+        apr_sleep(loopdelay);
+        loopdelay <<= 1;
+        if(loopdelay > CACHE_LOOP_MAXSLEEP) {
+            loopdelay = CACHE_LOOP_MAXSLEEP;
+        }
+
     }
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,

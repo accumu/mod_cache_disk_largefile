@@ -194,8 +194,6 @@ struct diskcache_bucket_data {
     apr_pool_t *readpool;
     /* Cache update timeout */
     apr_interval_time_t updtimeout;
-    /* Adaptive loop delay timeout */
-    apr_interval_time_t polldelay;
     /* The last time we returned data */
     apr_time_t lastdata;
 };
