@@ -69,6 +69,9 @@
 #define CACHE_LOOP_MINSLEEP 4000
 #define CACHE_LOOP_MAXSLEEP 100000
 
+/* Size of fadvise (readahead) window */
+#define CACHE_FADVISE_WINDOW 8388608
+
 /* Size of window to flush when writing */
 #define CACHE_WRITE_FLUSH_WINDOW 8388608
 

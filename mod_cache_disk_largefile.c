@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.51 2016/04/24 08:19:54 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.52 2016/04/24 08:27:36 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2098,7 +2098,7 @@ static apr_status_t check_destfd_timeout(apr_file_t *fd, apr_time_t now,
 }
 
 
-static apr_status_t copy_body(apr_pool_t *p,
+static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
                               apr_file_t *srcfd, apr_off_t srcoff, 
                               apr_file_t *destfd, apr_off_t destoff, 
                               apr_off_t len, apr_interval_time_t updtimeout)
@@ -2113,27 +2113,52 @@ static apr_status_t copy_body(apr_pool_t *p,
     apr_interval_time_t minintvl = updtimeout/10;
     apr_interval_time_t maxintvl = minintvl*3;
     int srcfd_os, destfd_os;
-    off64_t srcoff_os, destoff_os, flushoff;
+    off64_t srcoff_os, destoff_os, fadvoff, flushoff, remaining;
     int err;
 
-    char *buf = apr_palloc(p, S_MIN(len, CACHE_BUF_SIZE));
-    if (!buf) {
-        return APR_ENOMEM;
+    if (APLOGtrace4(ap_server_conf)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                "Called copy_file_region.  bufsize: %" APR_SIZE_T_FMT "  "
+                "srcfd: %pp  destfd: %pp  srcoff: %" APR_OFF_T_FMT "  "
+                "destoff: %" APR_OFF_T_FMT "  len: %" APR_OFF_T_FMT,
+                bufsize, srcfd, destfd, srcoff, destoff, len);
     }
 
-    if(srcoff != 0) {
+    if(srcoff >= 0) {
         rc = apr_file_seek(srcfd, APR_SET, &srcoff);
-        if(rc != APR_SUCCESS) {
-            return rc;
+    }
+    else {
+        srcoff = 0;
+        rc = apr_file_seek(srcfd, APR_CUR, &srcoff);
+        if (APLOGtrace4(ap_server_conf)) {
+            ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                    "copy_file_region: srcoff: %" APR_OFF_T_FMT,
+                    srcoff);
         }
     }
+    if(rc != APR_SUCCESS) {
+        return rc;
+    }
+    srcoff_os = srcoff;
+    fadvoff = srcoff;
 
-    if(destoff != 0) {
+    if(destoff >= 0) {
         rc = apr_file_seek(destfd, APR_SET, &destoff);
-        if(rc != APR_SUCCESS) {
-            return rc;
+    }
+    else {
+        destoff = 0;
+        rc = apr_file_seek(srcfd, APR_CUR, &destoff);
+        if (APLOGtrace4(ap_server_conf)) {
+            ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                    "copy_file_region: destoff: %" APR_OFF_T_FMT,
+                    destoff);
         }
     }
+    if(rc != APR_SUCCESS) {
+        return rc;
+    }
+    destoff_os = destoff;
+    flushoff = destoff;
 
     rc = apr_os_file_get(&srcfd_os, srcfd);
     if(rc != APR_SUCCESS) {
@@ -2150,16 +2175,13 @@ static apr_status_t copy_body(apr_pool_t *p,
     err=posix_fadvise(srcfd_os, 0, 0, POSIX_FADV_SEQUENTIAL);
     if(err) {
         rc = APR_FROM_OS_ERROR(err);
-        ap_log_perror(APLOG_MARK, APLOG_WARNING, rc, p,
-                     "copy_body: posix_fadvise");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                     "copy_file_region: posix_fadvise");
     }
 #endif /* POSIX_FADV_SEQUENTIAL */
 
-    srcoff_os = 0;
-    destoff_os = 0;
-    flushoff = 0;
     while(len > 0) {
-        size=S_MIN(len, CACHE_BUF_SIZE);
+        size=S_MIN(len, bufsize);
 
         rc = apr_file_read_full (srcfd, buf, size, NULL);
         if(rc != APR_SUCCESS) {
@@ -2171,23 +2193,33 @@ static apr_status_t copy_body(apr_pool_t *p,
         err=posix_fadvise(srcfd_os, srcoff_os, size, POSIX_FADV_DONTNEED);
         if(err) {
             rc = APR_FROM_OS_ERROR(err);
-            ap_log_perror(APLOG_MARK, APLOG_WARNING, rc, p,
-                         "copy_body: posix_fadvise");
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                         "copy_file_region: posix_fadvise");
         }
 #endif /* POSIX_FADV_DONTNEED */
 
         srcoff_os += size;
 
 #ifdef POSIX_FADV_WILLNEED
-        if(len-size > 0) {
+        remaining = len-size;
+        if(remaining > 0 && fadvoff < srcoff_os + S_MIN(2*bufsize, remaining)) 
+        {
+            size_t fadvamount = S_MIN(remaining, CACHE_FADVISE_WINDOW);
             /* Tell kernel that we'll need more segments soon */
-            err=posix_fadvise(srcfd_os, srcoff_os, 2*CACHE_BUF_SIZE,
+            err=posix_fadvise(srcfd_os, srcoff_os, fadvamount,
                               POSIX_FADV_WILLNEED);
             if(err) {
                 rc = APR_FROM_OS_ERROR(err);
-                ap_log_perror(APLOG_MARK, APLOG_WARNING, rc, p,
-                             "copy_body: posix_fadvise");
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                             "copy_file_region: posix_fadvise");
             }
+            if (APLOGtrace4(ap_server_conf)) {
+                ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                        "copy_file_region: fadvise WILLNEED off: %"
+                        APR_OFF_T_FMT "  amount: %" APR_OFF_T_FMT,
+                        srcoff_os, fadvamount);
+            }
+            fadvoff += fadvamount;
         }
 #endif /* POSIX_FADV_WILLNEED */
 
@@ -2233,12 +2265,19 @@ static apr_status_t copy_body(apr_pool_t *p,
         destoff_os += size;
 
 #ifdef SYNC_FILE_RANGE_WRITE
-        if(destoff_os - flushoff >= CACHE_WRITE_FLUSH_WINDOW) {
+        if(destoff_os - flushoff >= CACHE_WRITE_FLUSH_WINDOW) 
+        {
             /* Start flushing the current write window */
             if(sync_file_range(destfd_os, flushoff, destoff_os - flushoff,
                             SYNC_FILE_RANGE_WRITE) != 0)
             {
                 return(APR_FROM_OS_ERROR(errno));
+            }
+            if (APLOGtrace4(ap_server_conf)) {
+                ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                        "copy_file_region: sync_file_range WRITE off: %"
+                        APR_OFF_T_FMT "  amount: %" APR_OFF_T_FMT,
+                        flushoff, destoff_os - flushoff);
             }
             /* Wait for the previous window to be written to disk before
                continuing. This is to prevent the disk write queues to be
@@ -2252,6 +2291,13 @@ static apr_status_t copy_body(apr_pool_t *p,
                                    != 0)
                 {
                     return(APR_FROM_OS_ERROR(errno));
+                }
+                if (APLOGtrace4(ap_server_conf)) {
+                    ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                            "copy_file_region: sync_file_range WAIT off: %"
+                            APR_OFF_T_FMT "  amount: %" APR_OFF_T_FMT,
+                            flushoff-CACHE_WRITE_FLUSH_WINDOW,
+                            (apr_off_t)CACHE_WRITE_FLUSH_WINDOW);
                 }
             }
 
@@ -2297,6 +2343,17 @@ static apr_status_t copy_body_nofd(apr_pool_t *p, const char *srcfile,
     apr_status_t rc;
     apr_file_t *srcfd, *destfd;
     apr_finfo_t srcfinfo, destfinfo;
+    char *buf;
+    apr_size_t bufsize;
+
+    bufsize = S_MIN(len, CACHE_BUF_SIZE);
+
+    buf = apr_palloc(p, bufsize);
+    if (!buf) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, APR_ENOMEM, ap_server_conf,
+                     "copy_body_nofd: palloc buf");
+        return APR_ENOMEM;
+    }
 
     rc = apr_file_open(&srcfd, srcfile, APR_READ | APR_BINARY, 0, p);
     if(rc != APR_SUCCESS) {
@@ -2337,7 +2394,8 @@ static apr_status_t copy_body_nofd(apr_pool_t *p, const char *srcfile,
         return APR_EGENERAL;
     }
 
-    rc = copy_body(p, srcfd, srcoff, destfd, destoff, len, updtimeout);
+    rc = copy_file_region(buf, bufsize, srcfd, srcoff, destfd, destoff, len, 
+                   updtimeout);
     apr_file_close(srcfd);
     if(rc != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
@@ -2596,8 +2654,19 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
 #endif /* APR_HAS_FORK */
     if(1)
     {
-        rv = copy_body(newpool, srcfd, ci->srcoff, destfd, ci->destoff,
-                       ci->len, ci->updtimeout);
+        char *buf;
+        apr_size_t bufsize;
+
+        bufsize = S_MIN(len, CACHE_BUF_SIZE);
+
+        buf = apr_palloc(newpool, bufsize);
+        if (!buf) {
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, APR_ENOMEM, ap_server_conf,
+                         "copy_body_nofd: palloc buf");
+            return APR_ENOMEM;
+        }
+        rv = copy_file_region(buf, bufsize, srcfd, ci->srcoff, destfd, 
+                              ci->destoff, ci->len, ci->updtimeout);
         apr_pool_destroy(newpool);
     }
 
@@ -2693,14 +2762,16 @@ static void debug_rlog_brigade(const char *file, int line, int module_index,
 
             ap_log_rerror(file, line, module_index, level, status, r,
                          "%s bucket %d: type %s  length %" APR_OFF_T_FMT "  "
+                         "offset %" APR_OFF_T_FMT "  "
                          "fd %pp  fdpool %pp  fdname %s",
-                         bbname, i, btype, db->length,
+                         bbname, i, btype, db->length, db->start,
                          fd, apr_file_pool_get(fd), fname);
         }
         else {
             ap_log_rerror(file, line, module_index, level, status, r,
-                         "%s bucket %d: type %s length %" APR_OFF_T_FMT,
-                         bbname, i, btype, db->length);
+                         "%s bucket %d: type %s length %" APR_OFF_T_FMT "  "
+                         "offset %" APR_OFF_T_FMT "  ",
+                         bbname, i, btype, db->length, db->start);
         }
 
     }
@@ -2979,19 +3050,13 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             break;
         }
 
-        /* FIXME: We should probably break this into reasonably sized chunks
-                  (say 1MB) that we can do fadvise(WILLNEED) on, the smaller
-                  CACHE_BUF_SIZE in the copy loop is in reality handled by the
-                  OS readahead */
-
-        /* FIXME: Splitting on minbgsize makes little sense, even though this
-                  only happens when bgcopy isn't possible. Should probably
-                  have a common chunking size for this, read/write fadvise()
-                  and pacing */
-
-        if(e->length > conf->minbgsize) {
+        /* FIXME: This isn't really useful right now, but doesn't hurt as
+                  long as minbgsize is set lower than CACHE_FADVISE_WINDOW.
+                  Leave it in until we decide on whether to implement the
+                  incremental approach now possible with the in/out brigades */
+        if(e->length > CACHE_FADVISE_WINDOW) {
             /* Try to split the bucket into our chunk size */
-            rv = apr_bucket_split(e, conf->minbgsize);
+            rv = apr_bucket_split(e, CACHE_FADVISE_WINDOW);
             if(rv != APR_SUCCESS && !APR_STATUS_IS_ENOTIMPL(rv)) {
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
                               "apr_bucket_split()");
@@ -3002,36 +3067,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         if(APR_BUCKET_IS_FILE(e)) {
             apr_bucket_file *a = e->data;
             apr_size_t len = e->length;
-            int fd_os, err;
-            apr_off_t off;
-
-            /* FIXME: Should use copy_body() instead of code duplication */
-            rv = apr_os_file_get(&fd_os, a->fd);
-            if(rv != APR_SUCCESS) {
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                              "apr_os_file_get()");
-                break;
-            }
-
-            off = e->start;
-            rv = apr_file_seek(a->fd, APR_SET, &off);
-            if(rv != APR_SUCCESS) {
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                              "apr_file_seek()");
-                break;
-            }
-
-#ifdef POSIX_FADV_SEQUENTIAL
-            /* We expect sequential IO */
-            err=posix_fadvise(fd_os, e->start, e->length, 
-                              POSIX_FADV_SEQUENTIAL);
-            if(err) {
-                rv = APR_FROM_OS_ERROR(err);
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                              "posix_fadvise(POSIX_FADV_SEQUENTIAL)");
-                break;
-            }
-#endif /* POSIX_FADV_SEQUENTIAL */
+            apr_off_t off = e->start;
 
             if(dobj->tbuf == NULL) {
                 /* Use large buffer for non-dynamic content */
@@ -3041,63 +3077,25 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 else {
                     dobj->tbufsize = APR_BUCKET_BUFF_SIZE;
                 }
-                dobj->tbuf = apr_pcalloc(dobj->tpool, CACHE_BUF_SIZE);
+                dobj->tbuf = apr_palloc(dobj->tpool, CACHE_BUF_SIZE);
                 if(dobj->tbuf == NULL && rv == APR_SUCCESS) {
                     rv = APR_ENOMEM;
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                                  "apr_pcalloc()");
+                                  "apr_palloc()");
                     break;
                 }
             }
 
-            while(len > 0) {
-                apr_size_t size = S_MIN(len, dobj->tbufsize);
-                rv = apr_file_read_full(a->fd, dobj->tbuf, size, NULL);
-                if(rv != APR_SUCCESS) {
-                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                                  "apr_file_read_full()");
-                    break;
-                }
+            rv = copy_file_region(dobj->tbuf, dobj->tbufsize,
+                                  a->fd, off,
+                                  dobj->bfd_write, -1,
+                                  len, conf->updtimeout);
 
-#ifdef POSIX_FADV_DONTNEED
-                /* We will never need this segment again */
-                err=posix_fadvise(fd_os, off, size, 
-                                  POSIX_FADV_DONTNEED);
-                if(err) {
-                    rv = APR_FROM_OS_ERROR(err);
-                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                                  "posix_fadvise(POSIX_FADV_DONTNEED)");
-                    break;
-                }
-#endif /* POSIX_FADV_DONTNEED */
-
-                off += size;
-
-#ifdef POSIX_FADV_WILLNEED
-                if(len-size > 0) {
-                    err=posix_fadvise(fd_os, off, 2*CACHE_BUF_SIZE, 
-                                      POSIX_FADV_WILLNEED);
-                    if(err) {
-                        rv = APR_FROM_OS_ERROR(err);
-                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                                      "posix_fadvise(POSIX_FADV_WILLNEED)");
-                        break;
-                    }
-                }
-#endif /* POSIX_FADV_WILLNEED */
-
-                rv = apr_file_write_full(dobj->bfd_write, dobj->tbuf, size, NULL);
-                if(rv != APR_SUCCESS) {
-                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, 
-                                  "apr_file_write_full()");
-                    break;
-                }
-                written += size;
-                len -= size;
-            }
             if(rv != APR_SUCCESS) {
                 break;
             }
+
+            written = len;
         }
         else { /* Not FILE bucket */
             rv = apr_bucket_read(e, &str, &length, APR_BLOCK_READ);
@@ -3148,21 +3146,24 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             apr_bucket_delete(e);
             if(fbout) {
                 /* Just extend the existing file cache bucket */
-                /* FIXME: This isn't large-file safe on 32bit platforms, do
-                          we really care? */
+                /* FIXME: This isn't large-file safe on 32bit platforms */
                 fbout->length += written;
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                             "URL %s extended out brigade to len %" 
-                             APR_OFF_T_FMT " off %" APR_OFF_T_FMT,
-                             dobj->name, fbout->length, fbout->start);
+                if (APLOGrtrace1(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                            "URL %s extended out brigade to len %" 
+                            APR_OFF_T_FMT " off %" APR_OFF_T_FMT,
+                            dobj->name, fbout->length, fbout->start);
+                }
             }
             else {
                 fbout = apr_brigade_insert_file(out, dobj->bfd_read, 
                                             dobj->file_size, written, r->pool);
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                             "URL %s added out brigade len %" APR_OFF_T_FMT
-                             " off %" APR_OFF_T_FMT,
-                             dobj->name, written, dobj->file_size);
+                if (APLOGrtrace1(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                                 "URL %s added out brigade len %" APR_OFF_T_FMT
+                                 " off %" APR_OFF_T_FMT,
+                                 dobj->name, written, dobj->file_size);
+                }
 
             }
             if(!fbout) {
@@ -3271,6 +3272,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                              "because store_headers failed",
                              dobj->name);
                 return rv;
+            }
+            if (APLOGrtrace1(r)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                              "store_body: final size: %" APR_OFF_T_FMT,
+                              dobj->file_size);
             }
         }
         else if(dobj->initial_size != dobj->file_size) {
