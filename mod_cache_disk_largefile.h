@@ -50,19 +50,19 @@
 /* How much the file on disk must have grown beyond the current offset
    before diskcache_bucket_read breaks out of the stat/sleep-loop */
 
-/* #define CACHE_BUCKET_MINCHUNK 524288 */
-/* Doesn't make much sense to wait for too much data, POSIX writes are atomic
-   anyway... If we get small chunks that's because the data is produced that
-   way, ie. dir indexes and whatnot. */
-#define CACHE_BUCKET_MINCHUNK 32
+/* The min size is used when called in blocking mode (ie. urgent read) */
+#define CACHE_BUCKET_MINCHUNK (256)
 
-/* Our preferred chunksize, avoid cluttering things up with tiny chunks
-   if possible */
-#define CACHE_BUCKET_PREFERCHUNK 33554432
+/* Limit size returned when backing file not complete, we want to keep
+   being called so we can convert to file-based buckets as soon as possible */
+#define CACHE_BUCKET_MAXCHUNK (8388608)
 
-/* How long to wait for the preferred sized chunks (micro-seconds), lets
-   use different timeouts for blocking and non-blocking bucket reads... */
-#define CACHE_BUCKET_PREFERWAIT_NONBLOCK 1000000
+/* The absolute maximum size of a bucket, strive to get as
+   close to this as possible to reduce the number of buckets for large files.
+   Yields 1GB on 32bit platforms, larger on 64bit */
+#define CACHE_BUCKET_MAX ((APR_SIZE_MAX>>2)+1)
+
+/* How long to wait for the preferred sized chunks (micro-seconds) */
 #define CACHE_BUCKET_PREFERWAIT_BLOCK 10000
 
 /* How long to sleep before retrying while looping (micro-seconds) */

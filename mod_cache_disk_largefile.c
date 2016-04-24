@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.48 2016/04/23 16:49:39 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.49 2016/04/23 22:18:34 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -123,7 +123,12 @@ static void diskcache_bucket_destroy(void *data)
 
 
 /* The idea here is to convert diskcache buckets to regular file buckets
-   as data becomes available */
+   as data becomes available. We want to keep being called if the backing
+   file isn't complete, so don't return too large chunks or we won't be
+   called for a long time when slow connections are involved. This would
+   in turn prevent us from returning the entire file as a file bucket,
+   which is the requirement for event mpm async write completion to kick in.
+ */
 static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
                                           apr_size_t *len, 
                                           apr_read_type_e block)
@@ -137,7 +142,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     apr_size_t filelength = e->length; /* bytes remaining in file past offset */
     apr_off_t fileoffset = e->start;
     apr_size_t available;
-    apr_time_t start = apr_time_now(), preferwait;
+    apr_time_t start = apr_time_now();
 #if APR_HAS_THREADS && !APR_HAS_XTHREAD_FILES
     apr_int32_t flags;
 #endif
@@ -166,7 +171,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
         ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
                 "Called diskcache_bucket_read.  block: %d  fd: %pp  "
                 "fd pool: %pp  readpool: %pp  "
-                "lastdata: %" APR_TIME_T_FMT ".%" APR_TIME_T_FMT, 
+                "lastdata: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT, 
                 block, f, apr_file_pool_get(f), a->readpool, 
                 apr_time_sec(a->lastdata), apr_time_usec(a->lastdata));
     }
@@ -180,25 +185,10 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
             return rv;
         }
 
-        /* Always be content if we reach our preferred chunk size */
-        if(finfo.size >= 
-                fileoffset + S_MIN(filelength, CACHE_BUCKET_PREFERCHUNK)) 
-        {
-            break;
-        }
+        available = S_MIN(filelength, finfo.size-fileoffset);
 
-        /* In a pinch, deliver what's there after preferwait microseconds since
-           the last time we returned data */
-        if(block == APR_NONBLOCK_READ) {
-            preferwait = CACHE_BUCKET_PREFERWAIT_NONBLOCK;
-        }
-        else {
-            preferwait = CACHE_BUCKET_PREFERWAIT_BLOCK;
-        }
-        if(finfo.size >= fileoffset + S_MIN(filelength, CACHE_BUCKET_MINCHUNK)
-                &&
-                a->lastdata + preferwait < apr_time_now()) 
-        {
+        /* Always be content if we have the complete backing file */
+        if(available >= filelength) {
             break;
         }
 
@@ -207,8 +197,24 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
             return APR_EGENERAL;
         }
 
+        /* Non-blocking reads can retry */
         if(block == APR_NONBLOCK_READ) {
             return APR_EAGAIN;
+        }
+
+        /* Blocking, ie. urgent, reads gets the MAXCHUNK if available */
+        if(available >= CACHE_BUCKET_MAXCHUNK) {
+            available = CACHE_BUCKET_MAXCHUNK;
+            break;
+        }
+
+        /* Otherwise deliver what's there if larger than MINCHUNK after
+           PREFERWAIT microseconds since the last time we returned data */
+        if(available >= CACHE_BUCKET_MINCHUNK
+                &&
+                a->lastdata + CACHE_BUCKET_PREFERWAIT_BLOCK < apr_time_now()) 
+        {
+            break;
         }
 
         /* Check for timeout */
@@ -217,7 +223,7 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
         }
         /* If we have progress within half the timeout period, return what
            we have so far */
-        if(finfo.size > fileoffset &&
+        if(available > 0 &&
                 start < (apr_time_now() - a->updtimeout/2) ) 
         {
             break;
@@ -236,8 +242,9 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
     buf = apr_bucket_alloc(0, e->list);
     apr_bucket_heap_make(e, buf, 0, apr_bucket_free);
 
-    /* Wrap as much as possible into a regular file bucket */
-    available = S_MIN(filelength, finfo.size-fileoffset);
+    /* Wrap available data into a regular file bucket */
+    /* FIXME: This doesn't cater for CACHE_MAX_BUCKET, ie 32bit platforms,
+              which might need splitting into multiple buckets. */
     b = apr_bucket_file_create(f, fileoffset, available, a->readpool, e->list);
     APR_BUCKET_INSERT_AFTER(e, b);
 
@@ -250,7 +257,6 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
                 " off %" APR_OFF_T_FMT " len %" APR_SIZE_T_FMT,
                 fileoffset, available);
     }
-
 
     /* Put any remains in yet another bucket */
     if(available < filelength) {
@@ -355,11 +361,6 @@ static const apr_bucket_type_t bucket_type_diskcache = {
     apr_bucket_shared_copy
 };
 
-/* From apr_brigade.c */
-
-/* A "safe" maximum bucket size, 1Gb */
-#define MAX_BUCKET_SIZE (0x40000000)
-
 static apr_bucket * diskcache_brigade_insert(apr_bucket_brigade *bb,
                                                    apr_file_t *f, apr_off_t
                                                    start, apr_off_t length,
@@ -368,21 +369,21 @@ static apr_bucket * diskcache_brigade_insert(apr_bucket_brigade *bb,
 {
     apr_bucket *e;
 
-    if (length < MAX_BUCKET_SIZE) {
+    if (length < CACHE_BUCKET_MAX) {
         e = diskcache_bucket_create(f, start, (apr_size_t)length, timeout, p, 
                 bb->bucket_alloc);
     }
     else {
         /* Several buckets are needed. */        
-        e = diskcache_bucket_create(f, start, MAX_BUCKET_SIZE, timeout, p, 
+        e = diskcache_bucket_create(f, start, CACHE_BUCKET_MAX, timeout, p, 
                 bb->bucket_alloc);
 
-        while (length > MAX_BUCKET_SIZE) {
+        while (length > CACHE_BUCKET_MAX) {
             apr_bucket *ce;
             apr_bucket_copy(e, &ce);
             APR_BRIGADE_INSERT_TAIL(bb, ce);
-            e->start += MAX_BUCKET_SIZE;
-            length -= MAX_BUCKET_SIZE;
+            e->start += CACHE_BUCKET_MAX;
+            length -= CACHE_BUCKET_MAX;
         }
         e->length = (apr_size_t)length; /* Resize just the last bucket */
     }
