@@ -71,7 +71,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.52 2016/04/24 08:27:36 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.53 2016/04/24 16:25:34 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1666,15 +1666,17 @@ static apr_status_t store_table(apr_file_t *fd, apr_table_t *table,
 }
 
 
-static apr_status_t open_new_file(request_rec *r, const char *filename,
-                                  apr_file_t **fd, disk_cache_conf *conf)
+static apr_status_t open_new_file(request_rec *r, apr_pool_t *pool,
+                                  const char *filename, apr_file_t **fd, 
+                                  apr_time_t srcmtime, apr_off_t srcsize,
+                                  apr_interval_time_t updtimeout)
 {
     int flags = APR_CREATE | APR_WRITE | APR_BINARY | APR_EXCL;
     apr_status_t rv;
 
     while(1) {
         rv = apr_file_open(fd, filename, flags, 
-                           APR_FPROT_UREAD | APR_FPROT_UWRITE, r->pool);
+                           APR_FPROT_UREAD | APR_FPROT_UWRITE, pool);
 
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
                      "open_new_file: Opening %s", filename);
@@ -1682,7 +1684,8 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
         if(APR_STATUS_IS_EEXIST(rv)) {
             apr_finfo_t finfo;
 
-            rv = apr_stat(&finfo, filename, APR_FINFO_MTIME, r->pool);
+            rv = apr_stat(&finfo, filename, APR_FINFO_MTIME | APR_FINFO_SIZE,
+                          pool);
             if(APR_STATUS_IS_ENOENT(rv)) {
                 /* Someone else has already removed it, try again */
                 continue;
@@ -1691,12 +1694,21 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
                 return rv;
             }
 
-            /* FIXME: We should really check for size and mtime that matches
-               the source file too if available */
-            if(finfo.mtime < (apr_time_now() - conf->updtimeout) ) {
+            /* A file with the correct size and mtime is likely correct */
+            /* FIXME: This is incomplete, open_body_timeout() has the complete
+                      range of checks, need to make a function of it. */
+            if(srcmtime != APR_DATE_BAD && srcsize >= 0 && srcsize == finfo.size
+                    && apr_time_sec(srcmtime) == apr_time_sec(finfo.mtime))
+            {
+                /* Someone else has just created the file, return identifiable
+                   status so calling function can do the right thing */
+
+                return CACHE_EEXIST;
+            }
+            else if(finfo.mtime < (apr_time_now() - updtimeout) ) {
                 /* Something stale that's left around */
 
-                rv = apr_file_remove(filename, r->pool);
+                rv = apr_file_remove(filename, pool);
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
                              "open_new_file: removing old %s", filename);
                 if(rv != APR_SUCCESS && !APR_STATUS_IS_ENOENT(rv)) {
@@ -1708,16 +1720,13 @@ static apr_status_t open_new_file(request_rec *r, const char *filename,
                 continue;
             }
             else {
-                /* Someone else has just created the file, return identifiable
-                   status so calling function can do the right thing */
-
                 return CACHE_EEXIST;
             }
         }
         else if(APR_STATUS_IS_ENOENT(rv)) {
             /* The directory for the file didn't exist */
 
-            rv = mkdir_structure(filename, r->pool);
+            rv = mkdir_structure(filename, pool);
             if(rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                              "open_new_file: Failed to make "
@@ -1795,7 +1804,7 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
         return rv;
     }
 
-    rv = safe_file_rename(dobj->tempfile, vfile, r->pool);
+    rv = safe_file_rename(dobj->tempfile, vfile, dobj->tpool);
     if (rv != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                      "rename tempfile to varyfile failed: "
@@ -2030,7 +2039,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
 
     }
     else {
-        rv = open_new_file(r, dobj->hdrsfile, &(dobj->hfd), conf);
+        rv = open_new_file(r, dobj->tpool, dobj->hdrsfile, &(dobj->hfd), 
+                           APR_DATE_BAD, -1, conf->updtimeout);
         if(rv == CACHE_EEXIST) {
             dobj->skipstore = TRUE;
         }
@@ -2834,12 +2844,13 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             apr_finfo_t finfo;
             rv = apr_stat(&finfo, dobj->bodyfile, 
                           APR_FINFO_MTIME | APR_FINFO_SIZE | APR_FINFO_CSIZE, 
-                          r->pool);
+                          dobj->tpool);
             if(rv == APR_SUCCESS || APR_STATUS_IS_INCOMPLETE(rv)) {
                 /* Dest-file will have same mtime as source if it's
                    current */
-                /* FIXME: This code and the one used in open_body should
-                   probably be identical... */
+                /* FIXME: This is incomplete, open_body_timeout() has the
+                          complete range of checks, need to make a function of
+                          it. */
                 if(dobj->lastmod <= finfo.mtime && 
                         dobj->initial_size == finfo.size &&
                         !(finfo.valid & APR_FINFO_CSIZE && finfo.csize < finfo.size))
@@ -2851,10 +2862,10 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         }
 
         if(!dobj->skipstore) {
-            /* FIXME: We should pass the source file's size and mtime so
-               open_new_file() can more reliably determine if the target
-               file is current or stale. */
-            rv = open_new_file(r, dobj->bodyfile, &(dobj->bfd_write), conf);
+            rv = open_new_file(r, dobj->tpool, dobj->bodyfile, 
+                               &(dobj->bfd_write), 
+                               dobj->lastmod, dobj->initial_size,
+                               conf->updtimeout);
 #ifdef __linux
             /* Use Linux fallocate() to preallocate the file to avoid
                fragmentation and ENOSPC surprises */
