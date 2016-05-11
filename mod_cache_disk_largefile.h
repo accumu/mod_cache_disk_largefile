@@ -154,6 +154,7 @@ typedef struct disk_cache_object {
     unsigned int skipstore:1;   /* Set if we should skip storing stuff */
     unsigned int body_done:1;   /* Set when we're done with the body */
     unsigned int can_copy_file:1; /* Set when we can do a simple file copy */
+    unsigned int store_body_called:1; /* Set when store_body has been called */
 
     int header_only;            /* Copy of r->header_only */
 
