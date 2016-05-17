@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.55 2016/05/11 16:13:12 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.56 2016/05/17 13:41:27 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -520,6 +520,89 @@ static apr_status_t file_cache_errorcleanup(disk_cache_object_t *dobj,
 }
 
 
+static void debug_rlog_brigade(const char *file, int line, int module_index,
+                               int level, apr_status_t status,
+                               const request_rec *r, apr_bucket_brigade *bb,
+                               const char *bbname)
+{
+    apr_bucket *db;
+    char *btype;
+    apr_file_t *fd;
+    int i = 0;
+
+    for (db = APR_BRIGADE_FIRST(bb);
+            db != APR_BRIGADE_SENTINEL(bb);
+            db = APR_BUCKET_NEXT(db), i++)
+    {
+        btype = "UNKNOWN";
+        fd = NULL;
+
+        if(BUCKET_IS_DISKCACHE(db)) {
+            diskcache_bucket_data *a = db->data;
+            fd = a->fd;
+            btype = "DISKCACHE";
+        }
+        else if(APR_BUCKET_IS_FILE(db)) {
+            apr_bucket_file *a = db->data;
+            fd = a->fd;
+            btype = "FILE";
+        }
+        else if(APR_BUCKET_IS_HEAP(db)) {
+            btype = "HEAP";
+        }
+        else if(APR_BUCKET_IS_EOS(db)) {
+            btype = "EOS";
+        }
+        else if(APR_BUCKET_IS_FLUSH(db)) {
+            btype = "FLUSH";
+        }
+        else if(APR_BUCKET_IS_METADATA(db)) {
+            btype = "METADATA";
+        }
+        else if(AP_BUCKET_IS_EOR(db)) {
+            btype = "EOR";
+        }
+        else if(APR_BUCKET_IS_MMAP(db)) {
+            btype = "MMAP";
+        }
+        else if(APR_BUCKET_IS_PIPE(db)) {
+            btype = "PIPE";
+        }
+        else if(APR_BUCKET_IS_SOCKET(db)) {
+            btype = "SOCKET";
+        }
+        else if(APR_BUCKET_IS_TRANSIENT(db)) {
+            btype = "TRANSIENT";
+        }
+        else if(APR_BUCKET_IS_IMMORTAL(db)) {
+            btype = "IMMORTAL";
+        }
+        else if(APR_BUCKET_IS_POOL(db)) {
+            btype = "POOL";
+        }
+
+        if(fd) {
+            const char *fname=NULL;
+            apr_file_name_get(&fname, fd);
+
+            ap_log_rerror(file, line, module_index, level, status, r,
+                         "%s bucket %d: type %s  length %" APR_OFF_T_FMT "  "
+                         "offset %" APR_OFF_T_FMT "  "
+                         "fd %pp  fdpool %pp  fdname %s",
+                         bbname, i, btype, db->length, db->start,
+                         fd, apr_file_pool_get(fd), fname);
+        }
+        else {
+            ap_log_rerror(file, line, module_index, level, status, r,
+                         "%s bucket %d: type %s length %" APR_OFF_T_FMT "  "
+                         "offset %" APR_OFF_T_FMT "  ",
+                         bbname, i, btype, db->length, db->start);
+        }
+
+    }
+}
+
+
 static const char* regen_key(apr_pool_t *p, apr_table_t *headers,
                              apr_array_header_t *varray, const char *oldkey)
 {
@@ -619,6 +702,21 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
         return DECLINED;
     }
 
+    if (APLOGtrace3(ap_server_conf)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                      "create_entity called. r->filename: %s "
+                      "finfo.filetype: %d "
+                      "finfo.valid: %x "
+                      "finfo.protection: %x "
+                      "finfo.fname: %s "
+                      "len: %" APR_OFF_T_FMT,
+                      r->filename, r->finfo.filetype, r->finfo.valid, 
+                      r->finfo.protection, 
+                      r->finfo.fname?r->finfo.fname:"NULL", len);
+        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE3, 0, r, bb, 
+                           "create_entity bb");
+    }
+
     /* Allocate and initialize cache_object_t and disk_cache_object_t */
     h->cache_obj = obj = apr_pcalloc(r->pool, sizeof(*obj));
     obj->vobj = dobj = apr_pcalloc(r->pool, sizeof(*dobj));
@@ -645,33 +743,58 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     dobj->header_only = r->header_only;
     dobj->bytes_sent = 0;
 
+
     if(r->filename != NULL && strlen(r->filename) > 0) {
-        char buf[34];
-        char *str;
+        dobj->filename = r->filename;
 
-        /* When possible, hash the body on dev:inode to minimize file
-           duplication. */
-        if( (r->finfo.valid & APR_FINFO_IDENT) == APR_FINFO_IDENT) {
-            apr_uint64_t device = r->finfo.device; /* Avoid ifdef ... */
-            apr_uint64_t inode  = r->finfo.inode;  /* ... type-mess */
+        /* As of httpd 2.4 r->filename and r->finfo always seem to be set,
+           faked together from URL and document-root if there is no backing
+           file!
 
-            apr_snprintf(buf, sizeof(buf), "%016" APR_UINT64_T_HEX_FMT ":%016" 
-                         APR_UINT64_T_HEX_FMT, device, inode);
-            str = buf;
+           r->finfo.filetype seems to be correct when this is a real file
+           though...
+         */
+        if(r->finfo.filetype == APR_REG) {
+            char buf[34];
+            char *str;
+            int usedevino = TRUE;
+
+            /* finfo.protection (st_mode) set to zero if no such file */
+            if(r->finfo.protection == 0) {
+                usedevino = FALSE;
+            }
+            /* Is the device/inode in r->finfo valid? */
+            if(!(r->finfo.valid & APR_FINFO_IDENT)) {
+                usedevino = FALSE;
+            }
+
+            /* When possible, hash the body on dev:inode to minimize file
+               duplication. */
+            if(usedevino) {
+                apr_uint64_t device = r->finfo.device; /* Avoid ifdef ... */
+                apr_uint64_t inode  = r->finfo.inode;  /* ... type-mess */
+
+                apr_snprintf(buf, sizeof(buf), "%016" APR_UINT64_T_HEX_FMT ":%016" 
+                             APR_UINT64_T_HEX_FMT, device, inode);
+                str = buf;
+            }
+            else {
+                str = r->filename;
+            }
+
+            dobj->bodyfile = cache_file(r->pool, conf, NULL, str, 
+                                        CACHE_BODY_SUFFIX);
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                         "File %s was hashed using %s into %s",
+                         r->filename, str, dobj->bodyfile);
         }
         else {
-            str = r->filename;
+            dobj->bodyfile = cache_file(r->pool, conf, NULL, key, 
+                                        CACHE_BODY_SUFFIX);
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                         "Body of URL %s was hashed into %s",
+                         key, dobj->bodyfile);
         }
-        dobj->bodyfile = cache_file(r->pool, conf, NULL, str, 
-                                    CACHE_BODY_SUFFIX);
-        dobj->filename = r->filename;
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "File %s was hashed using %s into %s",
-                     r->filename, str, dobj->bodyfile);
-    }
-    else {
-        dobj->bodyfile = cache_file(r->pool, conf, NULL, key, 
-                                    CACHE_BODY_SUFFIX);
     }
 
     return OK;
@@ -1466,9 +1589,17 @@ static int remove_url(cache_handle_t *h, request_rec *r)
     return OK;
 }
 
+/* FIXME: Do we have anything that needs to be done here? */
 static apr_status_t commit_entity(cache_handle_t *h, request_rec *r)
 {
-    /* FIXME: Do we have anything that needs to be done here? */
+    disk_cache_object_t *dobj = (disk_cache_object_t*) h->cache_obj->vobj;
+
+
+    if (APLOGrtrace1(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called commit_entity.  "
+                      "URL: %s", dobj->name);
+    }
+
     return APR_SUCCESS;
 }
 
@@ -2829,89 +2960,6 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
     }
 
     return rv;
-}
-
-
-static void debug_rlog_brigade(const char *file, int line, int module_index,
-                               int level, apr_status_t status,
-                               const request_rec *r, apr_bucket_brigade *bb,
-                               const char *bbname)
-{
-    apr_bucket *db;
-    char *btype;
-    apr_file_t *fd;
-    int i = 0;
-
-    for (db = APR_BRIGADE_FIRST(bb);
-            db != APR_BRIGADE_SENTINEL(bb);
-            db = APR_BUCKET_NEXT(db), i++)
-    {
-        btype = "UNKNOWN";
-        fd = NULL;
-
-        if(BUCKET_IS_DISKCACHE(db)) {
-            diskcache_bucket_data *a = db->data;
-            fd = a->fd;
-            btype = "DISKCACHE";
-        }
-        else if(APR_BUCKET_IS_FILE(db)) {
-            apr_bucket_file *a = db->data;
-            fd = a->fd;
-            btype = "FILE";
-        }
-        else if(APR_BUCKET_IS_HEAP(db)) {
-            btype = "HEAP";
-        }
-        else if(APR_BUCKET_IS_EOS(db)) {
-            btype = "EOS";
-        }
-        else if(APR_BUCKET_IS_FLUSH(db)) {
-            btype = "FLUSH";
-        }
-        else if(APR_BUCKET_IS_METADATA(db)) {
-            btype = "METADATA";
-        }
-        else if(AP_BUCKET_IS_EOR(db)) {
-            btype = "EOR";
-        }
-        else if(APR_BUCKET_IS_MMAP(db)) {
-            btype = "MMAP";
-        }
-        else if(APR_BUCKET_IS_PIPE(db)) {
-            btype = "PIPE";
-        }
-        else if(APR_BUCKET_IS_SOCKET(db)) {
-            btype = "SOCKET";
-        }
-        else if(APR_BUCKET_IS_TRANSIENT(db)) {
-            btype = "TRANSIENT";
-        }
-        else if(APR_BUCKET_IS_IMMORTAL(db)) {
-            btype = "IMMORTAL";
-        }
-        else if(APR_BUCKET_IS_POOL(db)) {
-            btype = "POOL";
-        }
-
-        if(fd) {
-            const char *fname=NULL;
-            apr_file_name_get(&fname, fd);
-
-            ap_log_rerror(file, line, module_index, level, status, r,
-                         "%s bucket %d: type %s  length %" APR_OFF_T_FMT "  "
-                         "offset %" APR_OFF_T_FMT "  "
-                         "fd %pp  fdpool %pp  fdname %s",
-                         bbname, i, btype, db->length, db->start,
-                         fd, apr_file_pool_get(fd), fname);
-        }
-        else {
-            ap_log_rerror(file, line, module_index, level, status, r,
-                         "%s bucket %d: type %s length %" APR_OFF_T_FMT "  "
-                         "offset %" APR_OFF_T_FMT "  ",
-                         bbname, i, btype, db->length, db->start);
-        }
-
-    }
 }
 
 
