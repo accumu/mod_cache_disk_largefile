@@ -37,7 +37,8 @@
 #define DISK_FORMAT_VERSION_OLD 4
 #define DISK_FORMAT_VERSION_OLD2 5
 #define DISK_FORMAT_VERSION_OLD3 7
-#define DISK_FORMAT_VERSION 8
+#define DISK_FORMAT_VERSION_OLD4 8
+#define DISK_FORMAT_VERSION 9
 
 #define CACHE_HEADER_SUFFIX ".header"
 #define CACHE_BODY_SUFFIX   ".body"
@@ -100,6 +101,9 @@ typedef struct {
      * to LFS builds */
     apr_int64_t file_size;
 
+    /* body cache file inode forced to 64bit for portability */
+    apr_uint64_t bodyinode;
+
     /* The parsed cache control header */
     cache_control_t control;
 
@@ -138,6 +142,7 @@ typedef struct disk_cache_object {
     apr_file_t *bfd_write; /* When opened for writing (APR_EXCL) */
     apr_file_t *bfd_read; /* When opened read-only */
     const char *bodyfile;
+    apr_ino_t bodyinode; /* inode of bodyfile, 0 if unknown */
 
     const char *name;           /* Requested URI without vary bits - 
                                    suitable for mortals. */
