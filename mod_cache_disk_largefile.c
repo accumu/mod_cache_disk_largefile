@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.60 2016/05/18 13:32:53 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.61 2016/05/18 14:37:44 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2423,7 +2423,7 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
     apr_interval_time_t minintvl = updtimeout/10;
     apr_interval_time_t maxintvl = minintvl*3;
     int srcfd_os, destfd_os;
-    off64_t srcoff_os, destoff_os, fadvoff, flushoff, remaining;
+    off64_t srcoff_os, destoff_os, fadvoff, flushoff;
     apr_off_t destfinalsize = destoff+len;
     int err;
 
@@ -2492,6 +2492,28 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
 #endif /* POSIX_FADV_SEQUENTIAL */
 
     while(len > 0) {
+#ifdef POSIX_FADV_WILLNEED
+        if(len > 0 && fadvoff < srcoff_os + S_MIN(2*bufsize, len)) 
+        {
+            size_t fadvamount = S_MIN(len, CACHE_FADVISE_WINDOW);
+            /* Tell kernel that we'll need more segments soon */
+            err=posix_fadvise(srcfd_os, srcoff_os, fadvamount,
+                              POSIX_FADV_WILLNEED);
+            if(err) {
+                rc = APR_FROM_OS_ERROR(err);
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
+                             "copy_file_region: posix_fadvise");
+            }
+            if (APLOGtrace4(ap_server_conf)) {
+                ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+                        "copy_file_region: fadvise WILLNEED off: %"
+                        APR_OFF_T_FMT "  amount: %" APR_OFF_T_FMT,
+                        srcoff_os, fadvamount);
+            }
+            fadvoff += fadvamount;
+        }
+#endif /* POSIX_FADV_WILLNEED */
+
         size=S_MIN(len, bufsize);
 
         rc = apr_file_read_full (srcfd, buf, size, NULL);
@@ -2511,30 +2533,6 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
 
         srcoff_os += size;
 
-#ifdef POSIX_FADV_WILLNEED
-        /* FIXME: Rethink this so the first fadvise WILLNEED call comes
-           before the first read */
-        remaining = len-size;
-        if(remaining > 0 && fadvoff < srcoff_os + S_MIN(2*bufsize, remaining)) 
-        {
-            size_t fadvamount = S_MIN(remaining, CACHE_FADVISE_WINDOW);
-            /* Tell kernel that we'll need more segments soon */
-            err=posix_fadvise(srcfd_os, srcoff_os, fadvamount,
-                              POSIX_FADV_WILLNEED);
-            if(err) {
-                rc = APR_FROM_OS_ERROR(err);
-                ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                             "copy_file_region: posix_fadvise");
-            }
-            if (APLOGtrace4(ap_server_conf)) {
-                ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
-                        "copy_file_region: fadvise WILLNEED off: %"
-                        APR_OFF_T_FMT "  amount: %" APR_OFF_T_FMT,
-                        srcoff_os, fadvamount);
-            }
-            fadvoff += fadvamount;
-        }
-#endif /* POSIX_FADV_WILLNEED */
 
         /* Do timeout checks before we do the write, this is what other clients
            will see. Don't waste resources by calling apr_time_now() on each
