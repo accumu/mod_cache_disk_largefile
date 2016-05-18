@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.56 2016/05/17 13:41:27 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.57 2016/05/17 18:21:16 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2220,11 +2220,6 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     const char *lastmods;
 
 
-    if (APLOGrtrace1(r)) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called store_headers.  "
-                      "URL: %s", dobj->name);
-    }
-
     /* This is flaky... we need to manage the cache_info differently */
     h->cache_obj->info = *info;
 
@@ -2237,26 +2232,59 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         dobj->lastmod = apr_date_parse_http(lastmods);
     }
 
+    if (APLOGrtrace1(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called store_headers.  "
+                      "URL: %s  dobj->lastmod: %" APR_TIME_T_FMT "  "
+                      "disk_info.lastmod: %" APR_TIME_T_FMT "  "
+                      "dobj->initial_size: %" APR_OFF_T_FMT "  "
+                      "disk_info.file_size: %" APR_OFF_T_FMT "  "
+                      "request_time: %" APR_OFF_T_FMT "  "
+                      "disk_info.expire: %" APR_OFF_T_FMT "  "
+                      "info->date: %" APR_OFF_T_FMT "  "
+                      "disk_info.date: %" APR_OFF_T_FMT "  "
+                      , dobj->name, dobj->lastmod, dobj->disk_info.lastmod,
+                      dobj->initial_size, dobj->disk_info.file_size,
+                      r->request_time, dobj->disk_info.expire,
+                      info->date, dobj->disk_info.date);
+    }
+
     if(dobj->hfd) {
         rewriting = TRUE;
+        int hdrcurrent = TRUE;
 
-        /* FIXME: Re-check if it still makes sense doing it this way */
-        /* Don't update header on disk if the following is met:
-           - The body size is known.
-           - If Last-Modified is known, it has to be identical.
-           - It's not expired.
-           - Date in cached header isn't older than updtimeout.
-         */
-        if( dobj->disk_info.file_size >= 0 && (dobj->lastmod == APR_DATE_BAD || 
-                dobj->lastmod == dobj->disk_info.lastmod) &&
-                dobj->disk_info.expire > r->request_time &&
-                dobj->disk_info.date > info->date - conf->updtimeout) 
+        if(dobj->disk_info.file_size < 0) {
+            /* Header on disk indicating unknown size being cached */
+            hdrcurrent = FALSE;
+        }
+        else if(dobj->initial_size < 0) {
+            /* Unknown size, shouldn't really happen when rewriting... */
+            hdrcurrent = FALSE;
+        }
+        else if(dobj->initial_size != dobj->disk_info.file_size) {
+            /* This object and on-disk object size doesn't match */
+            hdrcurrent = FALSE;
+        }
+        else if(dobj->lastmod != APR_DATE_BAD && 
+                dobj->lastmod != dobj->disk_info.lastmod)
         {
+            /* Last-Modified does not match */
+            hdrcurrent = FALSE;
+        }
+        else if(dobj->disk_info.expire <= r->request_time) {
+            /* On-disk headers expired */
+            hdrcurrent = FALSE;
+        }
+        else if(dobj->disk_info.date <= info->date - conf->updtimeout) {
+            /* On-disk headers older than updtimeout */
+            hdrcurrent = FALSE;
+        }
+
+        if(hdrcurrent) {
             dobj->skipstore = TRUE;
 
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                         "store_headers: Headers current for URL "
-                         "%s", dobj->name);
+                         "store_headers: Headers current for URL %s", 
+                         dobj->name);
         }
         else {
             ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
