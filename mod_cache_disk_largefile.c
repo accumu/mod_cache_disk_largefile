@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.57 2016/05/17 18:21:16 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.58 2016/05/18 11:19:56 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -475,45 +475,46 @@ static apr_status_t safe_file_rename(const char *src, const char *dest,
     return rv;
 }
 
-/* Close fd, remove file if it was opened for writing */
-static void close_and_rm(apr_file_t *fd, const char *file, request_rec *r)
-{
-    apr_int32_t flags = apr_file_flags_get(fd);
-
-    apr_file_close(fd);
-    if(flags & APR_FOPEN_WRITE) {
-        apr_file_remove(file, r->pool);
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "close_and_rm: Removed %s",
-                     file);
-    }
-}
-
-
 /* FIXME: Add flags to control what files are allowed to be removed
           instead? Current behavior makes no sense as fd:s are always used
           for the same purpose
  */
+/* dobj->errcleanflags determines if non-temporary files gets deleted */
 static apr_status_t file_cache_errorcleanup(disk_cache_object_t *dobj, 
                                             request_rec *r)
 {
-    /* Only remove files that are opened for write when called, files
-       opened only for reading must be explicitly removed */
+    apr_status_t rc;
+
     if(dobj->hfd) {
-        close_and_rm(dobj->hfd, dobj->hdrsfile, r);
+        apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
     }
+    if( (dobj->errcleanflags & ERRCLEAN_HEADER) ) {
+        rc = apr_file_remove(dobj->hdrsfile, r->pool);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                "file_cache_errorcleanup: Removed %s", dobj->hdrsfile);
+    }
+
     if(dobj->bfd_read) {
         apr_file_close(dobj->bfd_read);
         dobj->bfd_read = NULL;
     }
     if(dobj->bfd_write) {
-        close_and_rm(dobj->bfd_write, dobj->bodyfile, r);
+        apr_file_close(dobj->bfd_write);
         dobj->bfd_write = NULL;
     }
+    if( (dobj->errcleanflags & ERRCLEAN_BODY) ) {
+        rc = apr_file_remove(dobj->bodyfile, r->pool);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                "file_cache_errorcleanup: Removed %s", dobj->bodyfile);
+    }
+
     if (dobj->tfd) {
-        close_and_rm(dobj->tfd, dobj->tempfile, r);
+        apr_file_close(dobj->tfd);
         dobj->tfd = NULL;
+        rc = apr_file_remove(dobj->tempfile, r->pool);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                "file_cache_errorcleanup: Removed %s", dobj->tempfile);
     }
 
     return APR_SUCCESS;
@@ -918,8 +919,10 @@ static apr_status_t open_header(cache_object_t *obj, disk_cache_object_t *dobj,
                      "File '%s' had a version mismatch. File had "
                      "version: %d (current is %d). Deleted.", dobj->hdrsfile,
                      format, DISK_FORMAT_VERSION);
+
+        dobj->errcleanflags |= ERRCLEAN_HEADER;
         file_cache_errorcleanup(dobj, r);
-        apr_file_remove(dobj->hdrsfile, r->pool);
+
         return CACHE_EDECLINED;
     }
 
@@ -1012,8 +1015,9 @@ static apr_status_t load_header_strings(request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                 "Corrupt cache header for URL %s, deleting: %s",
                 dobj->name, dobj->hdrsfile);
+        dobj->errcleanflags |= ERRCLEAN_HEADER;
         file_cache_errorcleanup(dobj, r);
-        apr_file_remove(dobj->hdrsfile, r->pool);
+
         return CACHE_EDECLINED;
     }
 
@@ -1031,12 +1035,18 @@ static apr_status_t load_header_strings(request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                      "Timed out waiting for urlbuff for "
                      "URL %s - caching failed?",  dobj->name);
+        dobj->errcleanflags |= ERRCLEAN_HEADER;
+        file_cache_errorcleanup(dobj, r);
+
         return CACHE_EDECLINED;
     }
     else if(rc != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                      "Error reading urlbuff for URL %s",
                      dobj->name);
+        dobj->errcleanflags |= ERRCLEAN_HEADER;
+        file_cache_errorcleanup(dobj, r);
+
         return CACHE_EDECLINED;
     }
     urlbuff[len] = '\0';
@@ -1046,9 +1056,9 @@ static apr_status_t load_header_strings(request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                      "Cached URL %s didn't match requested "
                      "URL %s", urlbuff, dobj->name);
+        dobj->errcleanflags |= ERRCLEAN_HEADER;
         file_cache_errorcleanup(dobj, r);
-        apr_file_remove(dobj->hdrsfile, r->pool);
-        apr_file_remove(dobj->bodyfile, r->pool);
+
         return CACHE_EDECLINED;
     }
 
@@ -1066,12 +1076,18 @@ static apr_status_t load_header_strings(request_rec *r,
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "Timed out waiting for body cache "
                          "filename for URL %s - caching failed?", dobj->name);
+            dobj->errcleanflags |= ERRCLEAN_HEADER;
+            file_cache_errorcleanup(dobj, r);
+
             return CACHE_EDECLINED;
         }
         else if(rc != APR_SUCCESS) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "Error reading body cache filename for "
                          "URL %s", dobj->name);
+            dobj->errcleanflags |= ERRCLEAN_HEADER;
+            file_cache_errorcleanup(dobj, r);
+
             return CACHE_EDECLINED;
         }
         bodyfile[len] = '\0';
@@ -1092,12 +1108,18 @@ static apr_status_t load_header_strings(request_rec *r,
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "Timed out waiting for filename for "
                          "URL %s - caching failed?", dobj->name);
+            dobj->errcleanflags |= ERRCLEAN_HEADER;
+            file_cache_errorcleanup(dobj, r);
+
             return CACHE_EDECLINED;
         }
         else if(rc != APR_SUCCESS) {
             ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                          "Error reading filename for URL %s",
                          dobj->name);
+            dobj->errcleanflags |= ERRCLEAN_HEADER;
+            file_cache_errorcleanup(dobj, r);
+
             return CACHE_EDECLINED;
         }
         fnamebuf[len] = '\0';
@@ -1520,8 +1542,6 @@ static int remove_entity(cache_handle_t *h)
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
             "remove_entity: %s", dobj->name);
 
-    /* FIXME: Should we use file_cache_errorcleanup() instead? */
-
     if(dobj->hfd != NULL) {
         apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
@@ -1529,6 +1549,10 @@ static int remove_entity(cache_handle_t *h)
     if(dobj->bfd_read != NULL) {
         apr_file_close(dobj->bfd_read);
         dobj->bfd_read = NULL;
+    }
+    if(dobj->bfd_write != NULL) {
+        apr_file_close(dobj->bfd_write);
+        dobj->bfd_write = NULL;
     }
 
     /* Destroy temporary pool and buffer */
@@ -2077,7 +2101,6 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
     dobj->tfd = NULL;
     if (rv != APR_SUCCESS) {
         file_cache_errorcleanup(dobj, r);
-        apr_file_remove(dobj->tempfile, r->pool);
         return rv;
     }
 
@@ -2087,7 +2110,6 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
                      "rename tempfile to varyfile failed: "
                      "%s -> %s", dobj->tempfile, vfile);
         file_cache_errorcleanup(dobj, r);
-        apr_file_remove(dobj->tempfile, r->pool);
         return rv;
     }
 
@@ -2172,7 +2194,6 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
     rv = apr_file_writev_full(dobj->hfd, (const struct iovec *) &iov, niov, 
                               &amt);
     if (rv != APR_SUCCESS) {
-        file_cache_errorcleanup(dobj, r);
         return rv;
     }
 
@@ -2183,7 +2204,6 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
 
         rv = store_table(dobj->hfd, headers_out, dobj->tpool);
         if (rv != APR_SUCCESS) {
-            file_cache_errorcleanup(dobj, r);
             return rv;
         }
     }
@@ -2197,7 +2217,6 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
 
         rv = store_table(dobj->hfd, headers_in, dobj->tpool);
         if (rv != APR_SUCCESS) {
-            file_cache_errorcleanup(dobj, r);
             return rv;
         }
     }
@@ -2312,52 +2331,30 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
     } 
 
-    if(dobj->skipstore) {
-        apr_file_close(dobj->hfd);
-        dobj->hfd = NULL;
-        return APR_SUCCESS;
-    }
-
-    if(rewriting) {
-        apr_finfo_t     finfo;
-
-        rv = apr_file_info_get(&finfo, APR_FINFO_MTIME, dobj->hfd);
-        if(rv != APR_SUCCESS) {
-            return rv;
-        }
-
-        /* FIXME: Isn't this a bit redundant? It probably causes more
-           trouble than it's fixing, especially since we handle it above
-           except for looking at mtime */
-        /* Don't store disk headers more often than updtimeout */
-        if(dobj->disk_info.file_size >= 0 &&
-                dobj->disk_info.expire > r->request_time &&
-                r->request_time < finfo.mtime + conf->updtimeout) 
-        {
-            dobj->skipstore = TRUE;
-        }
-        else {
-            /* This triggers bugs in APR when using APR_BUFFERED */
+    if(!dobj->skipstore) {
+        if(rewriting) {
             apr_off_t off=0;
+            dobj->errcleanflags |= ERRCLEAN_HEADER;
             rv = apr_file_seek(dobj->hfd, APR_SET, &off);
             if (rv != APR_SUCCESS) {
+                file_cache_errorcleanup(dobj, r);
                 return rv;
             }
             rv = apr_file_trunc(dobj->hfd, 0);
             if(rv != APR_SUCCESS) {
+                file_cache_errorcleanup(dobj, r);
                 return rv;
             }
         }
-
-    }
-    else {
-        rv = open_new_file(r, dobj->tpool, dobj->hdrsfile, &(dobj->hfd), 
-                           APR_DATE_BAD, -1, conf->updtimeout);
-        if(rv == CACHE_EEXIST) {
-            dobj->skipstore = TRUE;
-        }
-        else if(rv != APR_SUCCESS) {
-            return rv;
+        else {
+            rv = open_new_file(r, dobj->tpool, dobj->hdrsfile, &(dobj->hfd), 
+                               APR_DATE_BAD, -1, conf->updtimeout);
+            if(rv == CACHE_EEXIST) {
+                dobj->skipstore = TRUE;
+            }
+            else if(rv != APR_SUCCESS) {
+                return rv;
+            }
         }
     }
 
@@ -2371,8 +2368,11 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         return APR_SUCCESS;
     }
 
+    dobj->errcleanflags |= ERRCLEAN_HEADER;
+
     rv = store_disk_header(h, r, info);
     if(rv != APR_SUCCESS) {
+        file_cache_errorcleanup(dobj, r);
         return rv;
     }
 
@@ -2382,7 +2382,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         rv = apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
         if(rv != APR_SUCCESS) {
-            apr_file_remove(dobj->hdrsfile, r->pool);
+            file_cache_errorcleanup(dobj, r);
             return rv;
         }
     }
@@ -2399,6 +2399,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "Stored headers for URL %s",  dobj->name);
     }
+
+    dobj->errcleanflags &= ~ERRCLEAN_HEADER;
 
     return APR_SUCCESS;
 }
@@ -3178,8 +3180,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
                                         "URL %s store_body store_headers failed"
                                         , dobj->name);
-                                file_cache_errorcleanup(dobj, r);
-                                apr_file_remove(dobj->hdrsfile, r->pool);
                                 return rv;
                             }
                         }
@@ -3245,13 +3245,16 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     ap_log_rerror(APLOG_MARK, APLOG_TRACE4, rv, r,
                                   "store_body: open_new_file failed");
                 }
+                dobj->errcleanflags |= ERRCLEAN_HEADER;
                 file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
+
                 return rv;
             }
             else { /* APR_SUCCESS */
                 int flags = APR_READ|APR_BINARY;
                 apr_finfo_t wfinfo, rfinfo;
+
+                dobj->errcleanflags |= ERRCLEAN_BODY;
 
                 /* Let's cheat a little to make error handling easier */
                 wfinfo.valid = 0;
@@ -3274,8 +3277,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                             "Error opening bodyfile %s for URL %s",
                             dobj->bodyfile, dobj->name);
                     file_cache_errorcleanup(dobj, r);
-                    apr_file_remove(dobj->hdrsfile, r->pool);
-                    apr_file_remove(dobj->bodyfile, r->pool);
+
                     return rv;
                 }
 
@@ -3286,8 +3288,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r, "store_body: "
                                   "bfd_write and bfd_read inode mismatch");
                     file_cache_errorcleanup(dobj, r);
-                    apr_file_remove(dobj->hdrsfile, r->pool);
-                    apr_file_remove(dobj->bodyfile, r->pool);
+
                     return APR_EBADF;
                 }
             }
@@ -3540,8 +3541,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                 "Error during store_body for URL %s", dobj->name);
         file_cache_errorcleanup(dobj, r);
-        apr_file_remove(dobj->hdrsfile, r->pool);
-        apr_file_remove(dobj->bodyfile, r->pool);
+
         return rv;
     }
 
@@ -3575,8 +3575,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                          "because connection has been aborted.",
                          dobj->name);
             file_cache_errorcleanup(dobj, r);
-            apr_file_remove(dobj->hdrsfile, r->pool);
-            apr_file_remove(dobj->bodyfile, r->pool);
+
             return APR_EGENERAL;
         }
 
@@ -3585,13 +3584,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             dobj->initial_size = dobj->file_size;
             rv = store_headers(h, r, &(h->cache_obj->info));
             if(rv != APR_SUCCESS) {
-                file_cache_errorcleanup(dobj, r);
-                apr_file_remove(dobj->hdrsfile, r->pool);
-                apr_file_remove(dobj->bodyfile, r->pool);
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                              "Discarded body for URL %s "
                              "because store_headers failed",
                              dobj->name);
+
                 return rv;
             }
             if (APLOGrtrace1(r)) {
@@ -3605,9 +3602,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                          "URL %s - body size mismatch: suggested %"
                          APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")",
                          dobj->name, dobj->initial_size, dobj->file_size);
+            dobj->errcleanflags |= ERRCLEAN_HEADER;
             file_cache_errorcleanup(dobj, r);
-            apr_file_remove(dobj->hdrsfile, r->pool);
-            apr_file_remove(dobj->bodyfile, r->pool);
+
             return APR_EGENERAL;
         }
 
@@ -3624,15 +3621,17 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         rv = apr_file_close(dobj->bfd_write);
         dobj->bfd_write = NULL;
         if(rv != APR_SUCCESS) {
-            apr_file_remove(dobj->bodyfile, r->pool);
             file_cache_errorcleanup(dobj, r);
             ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                          "Discarded body for URL %s "
                          "because close failed",
                          dobj->name);
+
             return rv;
         }
     }
+
+    dobj->errcleanflags &= ~ERRCLEAN_BODY;
 
     /* Destroy temporary pool and buffer */
     if(dobj->tpool != NULL) {
