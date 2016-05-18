@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.61 2016/05/18 14:37:44 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.62 2016/05/18 14:50:15 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -712,6 +712,20 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
                       r->finfo.fname?r->finfo.fname:"NULL", len);
         debug_rlog_brigade(APLOG_MARK, APLOG_TRACE3, 0, r, bb, 
                            "create_entity bb");
+    }
+
+    /* Would really like to avoid caching of objects without
+       last-modified, but that doesn't seem to be available until
+       store_headers, from which we can't return DECLINED ...
+       So let's settle for only handling objects that stems from
+       files/directories for now.
+     */
+    /* FIXME: It would make sense to make this configureable */
+    if(r->finfo.filetype != APR_REG && r->finfo.filetype != APR_DIR) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                     "URL %s not cached, not file/directory (filetype: %d)",
+                     key, r->finfo.filetype);
+        return DECLINED;
     }
 
     /* Allocate and initialize cache_object_t and disk_cache_object_t */
