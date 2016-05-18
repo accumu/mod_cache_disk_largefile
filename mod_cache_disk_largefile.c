@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.58 2016/05/18 11:19:56 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.59 2016/05/18 13:32:08 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -475,10 +475,6 @@ static apr_status_t safe_file_rename(const char *src, const char *dest,
     return rv;
 }
 
-/* FIXME: Add flags to control what files are allowed to be removed
-          instead? Current behavior makes no sense as fd:s are always used
-          for the same purpose
- */
 /* dobj->errcleanflags determines if non-temporary files gets deleted */
 static apr_status_t file_cache_errorcleanup(disk_cache_object_t *dobj, 
                                             request_rec *r)
