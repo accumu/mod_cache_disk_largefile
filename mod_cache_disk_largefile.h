@@ -160,6 +160,7 @@ typedef struct disk_cache_object {
     unsigned int body_done:1;   /* Set when we're done with the body */
     unsigned int can_copy_file:1; /* Set when we can do a simple file copy */
     unsigned int store_body_called:1; /* Set when store_body has been called */
+    unsigned int errcleanflags:2; /* Flags for what to clean on error */
 
     int header_only;            /* Copy of r->header_only */
 
@@ -172,6 +173,11 @@ typedef struct disk_cache_object {
     apr_size_t tbufsize;        /* Size of temp buffer */
 } disk_cache_object_t;
 
+/* errcleanflags */
+#define ERRCLEAN_HEADER (1<<0)
+#define ERRCLEAN_BODY (1<<1)
+#define ERRCLEAN_ALL (ERRCLEAN_HEADER | ERRCLEAN_BODY)
+#define ERRCLEAN_NONE (0)
 
 /*
  * mod_cache_disk_largefile configuration
