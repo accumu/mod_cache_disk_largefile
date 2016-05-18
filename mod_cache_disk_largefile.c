@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.62 2016/05/18 14:50:15 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.63 2016/05/18 17:15:23 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2264,7 +2264,9 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     if (APLOGrtrace1(r)) {
         apr_uint64_t bodyinode=dobj->bodyinode;
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called store_headers.  "
-                      "URL: %s  dobj->lastmod: %" APR_TIME_T_FMT "  "
+                      "URL: %s  "
+                      "dobj->skipstore: %d  "
+                      "dobj->lastmod: %" APR_TIME_T_FMT "  "
                       "disk_info.lastmod: %" APR_TIME_T_FMT "  "
                       "dobj->initial_size: %" APR_OFF_T_FMT "  "
                       "disk_info.file_size: %" APR_OFF_T_FMT "  "
@@ -2273,7 +2275,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
                       "info->date: %" APR_OFF_T_FMT "  "
                       "disk_info.date: %" APR_OFF_T_FMT "  "
                       "dobj->bodyinode: %" APR_UINT64_T_FMT
-                      , dobj->name, dobj->lastmod, dobj->disk_info.lastmod,
+                      , dobj->name, dobj->skipstore, 
+                      dobj->lastmod, dobj->disk_info.lastmod,
                       dobj->initial_size, dobj->disk_info.file_size,
                       r->request_time, dobj->disk_info.expire,
                       info->date, dobj->disk_info.date, bodyinode);
@@ -2284,33 +2287,66 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         int hdrcurrent = TRUE;
 
         if(dobj->disk_info.file_size < 0) {
-            /* Header on disk indicating unknown size being cached */
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                              "Header on disk indicating unknown size "
+                              "being cached" , dobj->name);
+            }
             hdrcurrent = FALSE;
         }
         else if(dobj->initial_size < 0) {
-            /* Unknown size, shouldn't really happen when rewriting... */
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                              "Unknown size, shouldn't really happen when"
+                              "rewriting...", dobj->name);
+            }
             hdrcurrent = FALSE;
         }
         else if(dobj->initial_size != dobj->disk_info.file_size) {
-            /* This object and on-disk object size doesn't match */
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                              "This object and on-disk object size doesn't "
+                              "match", dobj->name);
+            }
             hdrcurrent = FALSE;
         }
         else if(dobj->bodyinode != dobj->disk_info.bodyinode) {
-            /* Body inode doesn't match on-disk header */
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                              "Body inode doesn't match on-disk header",
+                              dobj->name);
+            }
             hdrcurrent = FALSE;
         }
         else if(dobj->lastmod != APR_DATE_BAD && 
                 dobj->lastmod != dobj->disk_info.lastmod)
         {
-            /* Last-Modified does not match */
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                               "Last-Modified does not match", dobj->name);
+            }
             hdrcurrent = FALSE;
         }
         else if(dobj->disk_info.expire <= r->request_time) {
-            /* On-disk headers expired */
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                              "On-disk headers expired", dobj->name);
+            }
             hdrcurrent = FALSE;
         }
         else if(dobj->disk_info.date <= info->date - conf->updtimeout) {
-            /* On-disk headers older than updtimeout */
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                              "On-disk headers older than updtimeout",
+                              dobj->name);
+            }
             hdrcurrent = FALSE;
         }
 
@@ -2323,8 +2359,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
         else {
             ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                         "Rewriting headers for URL %s", 
-                         dobj->name);
+                         "Rewriting headers for URL %s", dobj->name);
         }
     }
     else {
@@ -3166,8 +3201,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 /* skipstore can also be set by the first call
                    to store_headers */
                 int hdrskipstore = dobj->skipstore;
+                int bodyskipstore = FALSE;
 
-                if(dobj->bodyinode == 0 || !hdrskipstore) {
+                if(dobj->bodyinode == 0 && !hdrskipstore) {
                     needhdrupdate = TRUE;
                 }
                 dobj->bodyinode = firstfinfo.inode;
@@ -3195,7 +3231,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                              */
                             needhdrupdate = TRUE;
                         }
-                        dobj->skipstore = TRUE;
+                        bodyskipstore = TRUE;
                         if (APLOGrtrace4(r)) {
                             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, rv, r,
                                           "store_body: skipstore, "
@@ -3206,7 +3242,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     }
                 }
                 else {
-                    dobj->skipstore = TRUE;
+                    bodyskipstore = TRUE;
                     if (APLOGrtrace4(r)) {
                         ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                                       "store_body: skipstore (found cached body)");
@@ -3220,6 +3256,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                 , dobj->name);
                         return rv;
                     }
+                }
+                if(bodyskipstore) {
+                    dobj->skipstore = TRUE;
                 }
             }
 
@@ -3596,22 +3635,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "Done caching URL %s, len %" APR_OFF_T_FMT,
                      dobj->name, dobj->file_size);
-
-        /* FIXME: Do we really need to check r->no_cache here since we
-           checked it in the beginning? */
-        /* Assume that if we've got an initial size then bucket brigade
-           was complete and there's no danger in keeping it even if the
-           connection was aborted */
-        /* FIXME: This shouldn't be needed, if we've seen EOS then we're good */
-        if (r->no_cache || (r->connection->aborted && dobj->initial_size < 0)) {
-            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                         "Discarding body for URL %s "
-                         "because connection has been aborted.",
-                         dobj->name);
-            file_cache_errorcleanup(dobj, r);
-
-            return APR_EGENERAL;
-        }
 
         if(dobj->initial_size < 0) {
             /* Update header information now that we know the size */
