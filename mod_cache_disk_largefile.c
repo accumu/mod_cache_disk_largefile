@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.59 2016/05/18 13:32:08 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.60 2016/05/18 13:32:53 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2248,6 +2248,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     }
 
     if (APLOGrtrace1(r)) {
+        apr_uint64_t bodyinode=dobj->bodyinode;
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called store_headers.  "
                       "URL: %s  dobj->lastmod: %" APR_TIME_T_FMT "  "
                       "disk_info.lastmod: %" APR_TIME_T_FMT "  "
@@ -2257,10 +2258,11 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
                       "disk_info.expire: %" APR_OFF_T_FMT "  "
                       "info->date: %" APR_OFF_T_FMT "  "
                       "disk_info.date: %" APR_OFF_T_FMT "  "
+                      "dobj->bodyinode: %" APR_UINT64_T_FMT
                       , dobj->name, dobj->lastmod, dobj->disk_info.lastmod,
                       dobj->initial_size, dobj->disk_info.file_size,
                       r->request_time, dobj->disk_info.expire,
-                      info->date, dobj->disk_info.date);
+                      info->date, dobj->disk_info.date, bodyinode);
     }
 
     if(dobj->hfd) {
@@ -2277,6 +2279,10 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
         else if(dobj->initial_size != dobj->disk_info.file_size) {
             /* This object and on-disk object size doesn't match */
+            hdrcurrent = FALSE;
+        }
+        else if(dobj->bodyinode != dobj->disk_info.bodyinode) {
+            /* Body inode doesn't match on-disk header */
             hdrcurrent = FALSE;
         }
         else if(dobj->lastmod != APR_DATE_BAD && 
@@ -2372,9 +2378,9 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         return rv;
     }
 
-    /* If the body size is unknown, the header file will be rewritten later
-       so we can't close it */
-    if(dobj->initial_size >= 0) {
+    /* If the body size or inode is unknown, the header file will be rewritten
+       later so we can't close it */
+    if(dobj->initial_size >= 0 && dobj->bodyinode != 0) {
         rv = apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
         if(rv != APR_SUCCESS) {
@@ -3144,12 +3150,18 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             if(rv == APR_SUCCESS) {
                 /* Assume it's a valid cached bodyfile, either being cached
                    of fully cached */
+                int needhdrupdate = FALSE;
+                /* skipstore can also be set by the first call
+                   to store_headers */
+                int hdrskipstore = dobj->skipstore;
+
+                if(dobj->bodyinode == 0 || !hdrskipstore) {
+                    needhdrupdate = TRUE;
+                }
                 dobj->bodyinode = firstfinfo.inode;
 
                 /* Note: File might still be written */
                 dobj->file_size = firstfinfo.size;
-
-                /* FIXME: Need to store bodyinode in header as well */
 
                 /* Do skipstore (ie, reuse already cached body) if either:
                    - initial_size >= 0
@@ -3164,20 +3176,12 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                             apr_time_sec(firstfinfo.mtime)) 
                     {
                         dobj->initial_size = firstfinfo.size;
-                        /* skipstore can also be set by the first call
-                           to store_headers */
-                        if(!dobj->skipstore) {
+                        if(!hdrskipstore) {
                             /* Update header information with known size only
                                if initial call to store_headers didn't set
                                skipstore
                              */
-                            rv = store_headers(h, r, &(h->cache_obj->info));
-                            if(rv != APR_SUCCESS) {
-                                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
-                                        "URL %s store_body store_headers failed"
-                                        , dobj->name);
-                                return rv;
-                            }
+                            needhdrupdate = TRUE;
                         }
                         dobj->skipstore = TRUE;
                         if (APLOGrtrace4(r)) {
@@ -3194,6 +3198,15 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     if (APLOGrtrace4(r)) {
                         ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                                       "store_body: skipstore (found cached body)");
+                    }
+                }
+                if(needhdrupdate) {
+                    rv = store_headers(h, r, &(h->cache_obj->info));
+                    if(rv != APR_SUCCESS) {
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
+                                "URL %s store_body store_headers failed"
+                                , dobj->name);
+                        return rv;
                     }
                 }
             }
@@ -3261,8 +3274,20 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 apr_file_info_get(&wfinfo, APR_FINFO_IDENT, dobj->bfd_write);
 
                 if(wfinfo.valid & APR_FINFO_IDENT) {
-                    /* FIXME: Need to update header to store bodyinode */
                     dobj->bodyinode = wfinfo.inode;
+                }
+
+                /* Update the header with bodyinode info, but only if we've
+                   got an initial_size
+                 */
+                if(dobj->initial_size > 0) {
+                    rv = store_headers(h, r, &(h->cache_obj->info));
+                    if(rv != APR_SUCCESS) {
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
+                                "URL %s store_body store_headers failed"
+                                , dobj->name);
+                        return rv;
+                    }
                 }
 
                 rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
@@ -3565,6 +3590,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         /* Assume that if we've got an initial size then bucket brigade
            was complete and there's no danger in keeping it even if the
            connection was aborted */
+        /* FIXME: This shouldn't be needed, if we've seen EOS then we're good */
         if (r->no_cache || (r->connection->aborted && dobj->initial_size < 0)) {
             ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                          "Discarding body for URL %s "
