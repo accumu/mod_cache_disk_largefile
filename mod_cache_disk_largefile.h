@@ -218,12 +218,13 @@ typedef struct copyinfo copyinfo;
 struct copyinfo {
     apr_off_t len;
     /* Source info */
-    const char *srcfile;
-    apr_finfo_t srcinfo;
+    const char *srcname;
+    apr_file_t *srcfd;
     apr_off_t srcoff;
+    apr_time_t srcmtime;
     /* Destination info */
-    const char *destfile;
-    apr_finfo_t destinfo;
+    const char *destname;
+    apr_file_t *destfd;
     apr_off_t destoff;
 
     /* Cache update timeout */
@@ -232,13 +233,8 @@ struct copyinfo {
     /* Our private pool */
     apr_pool_t *pool;
 
-#if APR_HAS_THREADS
     /* Background process info */
     apr_thread_t *t;
-#endif /* APR_HAS_THREADS */
-#if APR_HAS_FORK
-    apr_proc_t *proc;
-#endif /* APR_HAS_FORK */
 
     /* For logging */
     const server_rec *s;

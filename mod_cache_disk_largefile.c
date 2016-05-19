@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.64 2016/05/18 18:02:09 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.65 2016/05/19 11:24:13 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2697,90 +2697,6 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
 }
 
 
-/* Provide srcfile and srcinfo containing APR_FINFO_IDENT|APR_FINFO_MTIME
-   and destfile and destinfo containing APR_FINFO_IDENT 
-   to make sure we have opened the right files
-   (someone might have just replaced them which messes up things).
-*/
-static apr_status_t copy_body_nofd(apr_pool_t *p, const char *srcfile, 
-                                   apr_off_t srcoff, apr_finfo_t *srcinfo,
-                                   const char *destfile, apr_off_t destoff, 
-                                   apr_finfo_t *destinfo, apr_off_t len, 
-                                   apr_interval_time_t updtimeout)
-{
-    apr_status_t rc;
-    apr_file_t *srcfd, *destfd;
-    apr_finfo_t srcfinfo, destfinfo;
-    char *buf;
-    apr_size_t bufsize;
-
-    bufsize = S_MIN(len, CACHE_BUF_SIZE);
-
-    buf = apr_palloc(p, bufsize);
-    if (!buf) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, APR_ENOMEM, ap_server_conf,
-                     "copy_body_nofd: palloc buf");
-        return APR_ENOMEM;
-    }
-
-    rc = apr_file_open(&srcfd, srcfile, APR_READ | APR_BINARY, 0, p);
-    if(rc != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                     "copy_body_nofd: apr_file_open srcfd");
-        return rc;
-    }
-    rc = apr_file_info_get(&srcfinfo, APR_FINFO_IDENT | APR_FINFO_MTIME, srcfd);
-    if(rc != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                     "copy_body_nofd: apr_file_info_get srcfd");
-        return rc;
-    }
-    if(srcinfo->inode != srcfinfo.inode || srcinfo->device != srcfinfo.device 
-            || srcinfo->mtime < srcfinfo.mtime) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                     "copy_body_nofd: src: inode/device/mtime mismatch");
-        return APR_EGENERAL;
-    }
-
-    rc = apr_file_open(&destfd, destfile, APR_WRITE | APR_BINARY, 0, p);
-    if(rc != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                     "copy_body_nofd: apr_file_open destfd");
-        return rc;
-    }
-    rc = apr_file_info_get(&destfinfo, APR_FINFO_IDENT, destfd);
-    if(rc != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                     "copy_body_nofd: apr_file_info_get destfd");
-        return rc;
-    }
-    if(destinfo->inode != destfinfo.inode 
-            || destinfo->device != destfinfo.device) 
-    {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                     "copy_body_nofd: dest: inode/device mismatch");
-        return APR_EGENERAL;
-    }
-
-    rc = copy_file_region(buf, bufsize, srcfd, srcoff, destfd, destoff, len, 
-                   updtimeout);
-    apr_file_close(srcfd);
-    if(rc != APR_SUCCESS) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
-                     "copy_body_nofd: copy_body");
-        apr_file_close(destfd);
-        return rc;
-    }
-
-    rc = apr_file_close(destfd);
-
-    /* Set mtime on dest file to the one of the source file */
-    apr_file_mtime_set(destfile, srcfinfo.mtime, p);
-
-    return rc;
-}
-
-
 static apr_status_t bgcopy_thread_cleanup(void *data)
 {
     copyinfo *ci = data;
@@ -2790,26 +2706,26 @@ static apr_status_t bgcopy_thread_cleanup(void *data)
     if (APLOGtrace2(ci->s)) {
         ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, ci->s,
                      "bgcopy_thread_cleanup: called for %s -> %s",
-                     ci->srcfile, ci->destfile);
+                     ci->srcname, ci->destname);
     }
 
     rc = apr_thread_join(&ret, ci->t);
     if(rc != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, rc, ci->s,
                      "bgcopy_thread_cleanup: apr_thread_join "
-                     "failed %s -> %s", ci->srcfile, ci->destfile);
+                     "failed %s -> %s", ci->srcname, ci->destname);
         return rc;
     }
     if(ret != APR_SUCCESS) {
         ap_log_error(APLOG_MARK, APLOG_ERR, ret, ci->s,
                      "Background caching body %s -> %s failed",
-                     ci->srcfile, ci->destfile);
+                     ci->srcname, ci->destname);
     }
 
     if (APLOGtrace1(ci->s)) {
         ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ci->s,
                 "bgcopy_thread_cleanup: SUCCESS %s -> %s",
-                ci->srcfile, ci->destfile);
+                ci->srcname, ci->destname);
     }
 
     /* Destroy our private pool */
@@ -2825,29 +2741,54 @@ static void *bgcopy_thread(apr_thread_t *t, void *data)
     copyinfo *ci = data;
     apr_pool_t *p;
     apr_status_t rc;
+    char *buf;
+    apr_size_t bufsize;
 
     p = apr_thread_pool_get(t);
 
     if (APLOGtrace1(ci->s)) {
         ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ci->s,
                      "bgcopy_thread: start %s -> %s",
-                     ci->srcfile, ci->destfile);
+                     ci->srcname, ci->destname);
     }
 
-    rc = copy_body_nofd(p, ci->srcfile, ci->srcoff, &(ci->srcinfo), 
-                        ci->destfile, ci->destoff, &(ci->destinfo),
-                        ci->len, ci->updtimeout);
+
+    bufsize = S_MIN(ci->len, CACHE_BUF_SIZE);
+    buf = apr_palloc(p, bufsize);
+    if (!buf) {
+        ap_log_error(APLOG_MARK, APLOG_ERR, APR_ENOMEM, ci->s,
+                     "bgcopy_thread: palloc buf");
+        apr_thread_exit(t, APR_ENOMEM);
+        return NULL;
+    }
+
+    rc = copy_file_region(buf, bufsize, ci->srcfd, ci->srcoff,
+                          ci->destfd, ci->destoff, ci->len, ci->updtimeout);
+
+    apr_file_close(ci->srcfd);
+    if(rc != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ci->s,
+                     "bgcopy_thread: copy_file_region");
+        apr_file_close(ci->destfd);
+        apr_thread_exit(t, rc);
+        return NULL;
+    }
+
+    rc = apr_file_close(ci->destfd);
+
+    /* Set mtime on dest file to the one of the source file */
+    apr_file_mtime_set(ci->destname, ci->srcmtime, p);
 
     if(rc != APR_ETIMEDOUT && rc != APR_SUCCESS) {
-        apr_file_remove(ci->destfile, p);
+        apr_file_remove(ci->destname, p);
         ap_log_error(APLOG_MARK, APLOG_ERR, rc, ci->s,
                      "bgcopy_thread: failed %s -> %s",
-                     ci->srcfile, ci->destfile);
+                     ci->srcname, ci->destname);
     }
     else {
         ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ci->s,
                      "bgcopy_thread: done %s -> %s",
-                     ci->srcfile, ci->destfile);
+                     ci->srcname, ci->destname);
     }
 
     apr_thread_exit(t, rc);
@@ -2856,6 +2797,7 @@ static void *bgcopy_thread(apr_thread_t *t, void *data)
 
 
 static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff, 
+                              apr_time_t srcmtime,
                               apr_file_t *destfd, apr_off_t destoff, 
                               apr_off_t len, apr_interval_time_t updtimeout,
                               conn_rec *c)
@@ -2863,7 +2805,6 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
     copyinfo *ci;
     apr_status_t rv;
     apr_pool_t *newpool;
-    const char *srcfile, *destfile;
 
     /* It seems pool gets destroyed (ie. fd's closed) before our cleanup 
        function is called when an error occurs (a dropped connection, for
@@ -2881,37 +2822,35 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
         return APR_ENOMEM;
     }
 
-    rv = apr_file_name_get(&srcfile, srcfd);
+    rv = apr_file_setaside(&(ci->srcfd), srcfd, newpool);
     if(rv != APR_SUCCESS) {
         apr_pool_destroy(newpool);
         return rv;
     }
-    rv = apr_file_info_get(&(ci->srcinfo), APR_FINFO_IDENT|APR_FINFO_MTIME,
-                           srcfd);
+    rv = apr_file_name_get(&(ci->srcname), ci->srcfd);
     if(rv != APR_SUCCESS) {
         apr_pool_destroy(newpool);
         return rv;
     }
 
-    rv = apr_file_name_get(&destfile, destfd);
+    rv = apr_file_setaside(&(ci->destfd), destfd, newpool);
     if(rv != APR_SUCCESS) {
         apr_pool_destroy(newpool);
         return rv;
     }
-    rv = apr_file_info_get(&(ci->destinfo), APR_FINFO_IDENT, destfd);
+    rv = apr_file_name_get(&(ci->destname), ci->destfd);
     if(rv != APR_SUCCESS) {
         apr_pool_destroy(newpool);
         return rv;
     }
 
     ci->pool = newpool;
-    ci->srcfile = apr_pstrdup(newpool, srcfile);
     ci->srcoff = srcoff;
-    ci->destfile = apr_pstrdup(newpool, destfile);
+    ci->srcmtime = srcmtime;
     ci->destoff = destoff;
     ci->len = len;
     ci->updtimeout = updtimeout;
-    ci->s = c->base_server;
+    ci->s = c->base_server; /* Can't use c - it might have been destroyed */
 
     apr_threadattr_t *ta;
     apr_thread_t *t;
@@ -2921,24 +2860,12 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
         return rv;
     }
 
-    apr_threadattr_detach_set(ta, FALSE);
-
-    /* FIXME: This makes module unloadable on AIX */
-#if 0
-#ifdef AP_MPM_WANT_SET_STACKSIZE
-    if (ap_thread_stacksize != 0) {
-        apr_threadattr_stacksize_set(ta, ap_thread_stacksize);
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, c->base_server,
-                "BG thread stacksize set to %"
-                APR_SIZE_T_FMT, ap_thread_stacksize);
-    }
-#endif /* AP_MPM_WANT_SET_STACKSIZE */
-#endif /* 0 */
-
+    rv = apr_threadattr_detach_set(ta, FALSE);
     if (rv != APR_SUCCESS) {
         apr_pool_destroy(newpool);
         return rv;
     }
+
     rv = apr_thread_create (&t, ta, bgcopy_thread, ci, newpool);
     if (rv != APR_SUCCESS) {
         apr_pool_destroy(newpool);
@@ -3278,6 +3205,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
             if(dobj->initial_size > conf->minbgsize &&
                     APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(in)) &&
+                    dobj->lastmod != APR_DATE_BAD &&
                     brigade_single_seqfile(r, in, dobj->initial_size) )
             {
                 dobj->can_copy_file = TRUE;
@@ -3369,10 +3297,22 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             apr_bucket_file *a = e->data;
 
             if(!did_bgcopy) {
+                apr_file_t *srcfd;
+
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                         "Doing background copy of body for URL %s, offset %"
                         APR_OFF_T_FMT " len %" APR_OFF_T_FMT, 
                         dobj->name, dobj->file_size, dobj->initial_size);
+ 
+                /* Need to dup the srcfd, as we don't control where it's
+                   closed */
+                rv = apr_file_dup(&srcfd, a->fd, dobj->tpool);
+                if(rv != APR_SUCCESS) {
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                            "store_body: URL %s: apr_file_dup failed",
+                            dobj->name);
+                    break;
+                }
 
                 /* FIXME: Can we end up with incomplete files in cache here?
                           - We should really start at 0, not e->start,
@@ -3383,12 +3323,15 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                             (file_size != 0 and file_size == e->start) then
                             this would be correct.
                  */
-                rv = do_bgcopy(a->fd, e->start, 
+                rv = do_bgcopy(srcfd, e->start, dobj->lastmod,
                                dobj->bfd_write, dobj->file_size, 
                                dobj->initial_size-dobj->file_size, 
                                conf->updtimeout, r->connection);
                 if(rv == APR_SUCCESS) {
                     did_bgcopy = TRUE;
+                    /* do_bgcopy sets aside the fds to its own pool, so
+                       we must not touch them afterwards */
+                    dobj->bfd_write = NULL;
                 }
                 else {
                     /* Gracefully fall back to non-bgcopy */
