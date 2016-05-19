@@ -34,9 +34,9 @@
 
 /* FIXME: Do hard requirement on threads and cross-thread fd:s and rip out
           all untested compat code that we're not using anyway */
-//#if !APR_HAS_THREADS
-//#error This module requires thread support
-//#endif /* !APR_HAS_THREADS */
+#if !APR_HAS_THREADS
+#error This module requires thread support
+#endif /* !APR_HAS_THREADS */
 //#if !APR_HAS_XTHREAD_FILES
 //#error This module requires cross-thread file descriptor support
 //#endif /* !APR_HAS_XTHREAD_FILES */
@@ -80,7 +80,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.63 2016/05/18 17:15:23 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.64 2016/05/18 18:02:09 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2781,7 +2781,6 @@ static apr_status_t copy_body_nofd(apr_pool_t *p, const char *srcfile,
 }
 
 
-#if APR_HAS_THREADS
 static apr_status_t bgcopy_thread_cleanup(void *data)
 {
     copyinfo *ci = data;
@@ -2854,37 +2853,6 @@ static void *bgcopy_thread(apr_thread_t *t, void *data)
     apr_thread_exit(t, rc);
     return NULL;
 }
-#endif /* APR_HAS_THREADS */
-
-
-#if APR_HAS_FORK
-static apr_status_t bgcopy_child_cleanup(void *data) {
-    copyinfo *ci = data;
-    int status;
-    apr_exit_why_e why;
-    apr_pool_t *p;
-
-    apr_proc_wait(ci->proc, &status, &why, APR_WAIT);
-    if(why == APR_PROC_EXIT) {
-        if(status != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, status, ci->s,
-                         "Background caching body %s -> %s failed",
-                         ci->srcfile, ci->destfile);
-        }
-    }
-    else if(status & (APR_PROC_SIGNAL | APR_PROC_SIGNAL_CORE) ) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ci->s,
-                     "Background caching body %s -> %s failed, "
-                     "caught signal %d", ci->srcfile, ci->destfile, status);
-    }
-
-    /* Destroy our private pool */
-    p = ci->pool;
-    apr_pool_destroy(p);
-
-    return APR_SUCCESS;
-}
-#endif /* APR_HAS_FORK */
 
 
 static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff, 
@@ -2896,7 +2864,6 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
     apr_status_t rv;
     apr_pool_t *newpool;
     const char *srcfile, *destfile;
-    int mpm_query_info;
 
     /* It seems pool gets destroyed (ie. fd's closed) before our cleanup 
        function is called when an error occurs (a dropped connection, for
@@ -2937,7 +2904,6 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
         return rv;
     }
 
-
     ci->pool = newpool;
     ci->srcfile = apr_pstrdup(newpool, srcfile);
     ci->srcoff = srcoff;
@@ -2947,96 +2913,41 @@ static apr_status_t do_bgcopy(apr_file_t *srcfd, apr_off_t srcoff,
     ci->updtimeout = updtimeout;
     ci->s = c->base_server;
 
-#if APR_HAS_THREADS
-    if(ap_mpm_query(AP_MPMQ_IS_THREADED, &mpm_query_info) == APR_SUCCESS) {
-        apr_threadattr_t *ta;
-        apr_thread_t *t;
-        rv = apr_threadattr_create(&ta, newpool);
-        if(rv != APR_SUCCESS) {
-            apr_pool_destroy(newpool);
-            return rv;
-        }
+    apr_threadattr_t *ta;
+    apr_thread_t *t;
+    rv = apr_threadattr_create(&ta, newpool);
+    if(rv != APR_SUCCESS) {
+        apr_pool_destroy(newpool);
+        return rv;
+    }
 
-        apr_threadattr_detach_set(ta, FALSE);
+    apr_threadattr_detach_set(ta, FALSE);
 
-        /* FIXME: This makes module unloadable on AIX */
+    /* FIXME: This makes module unloadable on AIX */
 #if 0
 #ifdef AP_MPM_WANT_SET_STACKSIZE
-        if (ap_thread_stacksize != 0) {
-            apr_threadattr_stacksize_set(ta, ap_thread_stacksize);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, c->base_server,
-                    "BG thread stacksize set to %"
-                    APR_SIZE_T_FMT, ap_thread_stacksize);
-        }
+    if (ap_thread_stacksize != 0) {
+        apr_threadattr_stacksize_set(ta, ap_thread_stacksize);
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, c->base_server,
+                "BG thread stacksize set to %"
+                APR_SIZE_T_FMT, ap_thread_stacksize);
+    }
 #endif /* AP_MPM_WANT_SET_STACKSIZE */
 #endif /* 0 */
 
-        if (rv != APR_SUCCESS) {
-            apr_pool_destroy(newpool);
-            return rv;
-        }
-        rv = apr_thread_create (&t, ta, bgcopy_thread, ci, newpool);
-        if (rv != APR_SUCCESS) {
-            apr_pool_destroy(newpool);
-            return rv;
-        }
-        ci->t = t;
-
-        apr_pool_cleanup_register(c->pool, ci, 
-                                  bgcopy_thread_cleanup, apr_pool_cleanup_null);
-    }
-    else
-#endif /* APR_HAS_THREADS */
-#if APR_HAS_FORK
-    if(ap_mpm_query(AP_MPMQ_IS_FORKED, &mpm_query_info) == APR_SUCCESS) {
-        ci->proc = apr_palloc(newpool, sizeof(apr_proc_t));
-        if(ci->proc == NULL) {
-            apr_pool_destroy(newpool);
-            return APR_ENOMEM;
-        }
-        if (rv != APR_SUCCESS) {
-            apr_pool_destroy(newpool);
-            return rv;
-        }
-        rv = apr_proc_fork(ci->proc, newpool);
-        if(rv == APR_INCHILD) {
-            /* Child */
-            rv = copy_body_nofd(ci->pool, ci->srcfile, ci->srcoff, 
-                                &(ci->srcinfo), ci->destfile, ci->destoff, 
-                                &(ci->destinfo), ci->len, ci->updtimeout);
-            if(rv != APR_ETIMEDOUT && rv != APR_SUCCESS) {
-                apr_file_remove(ci->destfile, ci->pool);
-            }
-            exit(rv);
-        }
-        else if(rv == APR_INPARENT) {
-            apr_pool_cleanup_register(c->pool, ci, 
-                                      bgcopy_child_cleanup, 
-                                      apr_pool_cleanup_null);
-        }
-        else {
-            return rv;
-        }
-    }
-    else 
-#endif /* APR_HAS_FORK */
-    if(1)
-    {
-        char *buf;
-        apr_size_t bufsize;
-
-        bufsize = S_MIN(len, CACHE_BUF_SIZE);
-
-        buf = apr_palloc(newpool, bufsize);
-        if (!buf) {
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, APR_ENOMEM, ap_server_conf,
-                         "copy_body_nofd: palloc buf");
-            return APR_ENOMEM;
-        }
-        rv = copy_file_region(buf, bufsize, srcfd, ci->srcoff, destfd, 
-                              ci->destoff, ci->len, ci->updtimeout);
+    if (rv != APR_SUCCESS) {
         apr_pool_destroy(newpool);
+        return rv;
     }
+    rv = apr_thread_create (&t, ta, bgcopy_thread, ci, newpool);
+    if (rv != APR_SUCCESS) {
+        apr_pool_destroy(newpool);
+        return rv;
+    }
+    ci->t = t;
+
+    apr_pool_cleanup_register(c->pool, ci, 
+                              bgcopy_thread_cleanup, apr_pool_cleanup_null);
 
     return rv;
 }
@@ -3476,28 +3387,38 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                dobj->bfd_write, dobj->file_size, 
                                dobj->initial_size-dobj->file_size, 
                                conf->updtimeout, r->connection);
-                if(rv != APR_SUCCESS) {
+                if(rv == APR_SUCCESS) {
+                    did_bgcopy = TRUE;
+                }
+                else {
+                    /* Gracefully fall back to non-bgcopy */
+                    dobj->can_copy_file = FALSE;
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                            "store_body: URL %s unable to initialize "
+                            "background copy, "
+                            "falling back to foreground copy",
+                            dobj->name);
+                }
+            }
+            if(did_bgcopy) {
+                if((diskcache_brigade_insert(out, dobj->bfd_read, 
+                                             e->start, e->length, 
+                                             conf->updtimeout, r->pool))
+                        == NULL)
+                {
+                    rv = APR_ENOMEM;
                     break;
                 }
-                did_bgcopy = TRUE;
+                if (APLOGrtrace1(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                            "store_body: URL %s added diskcache out bucket "
+                            "start %" APR_OFF_T_FMT " "
+                            "length %" APR_OFF_T_FMT,
+                            dobj->name, e->start, e->length);
+                }
+                apr_bucket_delete(e);
+                continue;
             }
-            if((diskcache_brigade_insert(out, dobj->bfd_read, 
-                                         e->start, e->length, 
-                                         conf->updtimeout, r->pool))
-                    == NULL)
-            {
-                rv = APR_ENOMEM;
-                break;
-            }
-            if (APLOGrtrace1(r)) {
-                ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                        "store_body: URL %s added diskcache out bucket "
-                        "start %" APR_OFF_T_FMT " "
-                        "length %" APR_OFF_T_FMT,
-                        dobj->name, e->start, e->length);
-            }
-            apr_bucket_delete(e);
-            continue;
         }
 
         /* FIXME: This isn't really useful right now, but doesn't hurt as
@@ -3785,9 +3706,22 @@ static const command_rec disk_cache_cmds[] =
 static int post_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp, 
                        server_rec *s)
 {
-    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "%s started.", rcsid);
+    int threaded_mpm;
 
-    return OK;
+    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "post_config: %s started.",
+                   rcsid);
+
+    if(ap_mpm_query(AP_MPMQ_IS_THREADED, &threaded_mpm) == APR_SUCCESS
+            && threaded_mpm) 
+    {
+        return OK;
+    }
+    
+    ap_log_error(APLOG_MARK, APLOG_ERR, APR_ENOTIMPL, s,
+                 "FATAL ERROR: disk_largefile requires a thread-capable"
+                " MPM!");
+
+    return HTTP_NOT_IMPLEMENTED;
 }
 
 static const cache_provider cache_disk_provider =
