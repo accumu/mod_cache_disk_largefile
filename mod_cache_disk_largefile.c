@@ -32,14 +32,9 @@
 #include "http_main.h"
 #include "http_request.h"
 
-/* FIXME: Do hard requirement on threads and cross-thread fd:s and rip out
-          all untested compat code that we're not using anyway */
 #if !APR_HAS_THREADS
 #error This module requires thread support
 #endif /* !APR_HAS_THREADS */
-//#if !APR_HAS_XTHREAD_FILES
-//#error This module requires cross-thread file descriptor support
-//#endif /* !APR_HAS_XTHREAD_FILES */
 
 /*
  * mod_cache_disk_largefile: Disk Based HTTP 1.1 Cache.
@@ -80,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.65 2016/05/19 11:24:13 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 1.66 2016/05/19 13:14:06 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
