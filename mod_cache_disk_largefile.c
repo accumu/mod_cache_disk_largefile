@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 1.66 2016/05/19 13:14:06 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.1 2016/05/19 13:21:37 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -137,14 +137,15 @@ static apr_status_t diskcache_bucket_read(apr_bucket *e, const char **str,
 #endif
 
 #if APR_HAS_THREADS && !APR_HAS_XTHREAD_FILES
-    if ((flags = apr_file_flags_get(f)) & APR_XTHREAD) {
+    if ((flags = apr_file_flags_get(f)) & APR_FOPEN_XTHREAD) {
         /* this file descriptor is shared across multiple threads and
          * this OS doesn't support that natively, so as a workaround
          * we must reopen the file into a->readpool */
         const char *fname;
         apr_file_name_get(&fname, f);
 
-        rv = apr_file_open(&f, fname, (flags & ~APR_XTHREAD), 0, a->readpool);
+        rv = apr_file_open(&f, fname, (flags & ~APR_FOPEN_XTHREAD), 0, 
+                           a->readpool);
         if (rv != APR_SUCCESS)
             return rv;
 
@@ -851,7 +852,7 @@ static apr_status_t open_header(cache_object_t *obj, disk_cache_object_t *dobj,
                                 request_rec *r, const char *key, 
                                 disk_cache_conf *conf)
 {
-    int flags = APR_READ | APR_WRITE | APR_BINARY;
+    int flags = APR_FOPEN_READ | APR_FOPEN_WRITE | APR_FOPEN_BINARY;
     disk_cache_format_t format;
     apr_status_t rc;
     const char *nkey = key;
@@ -1323,7 +1324,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
 {
     apr_status_t rc;
     apr_finfo_t finfo;
-    int flags = APR_READ|APR_BINARY;
+    int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
     apr_interval_time_t loopdelay=CACHE_LOOP_MINSLEEP;
     cache_info *info = &(cache_obj->info);
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
@@ -1976,7 +1977,8 @@ static apr_status_t open_new_file(request_rec *r, apr_pool_t *pool,
                                   apr_time_t srcmtime, apr_off_t srcsize,
                                   apr_interval_time_t updtimeout)
 {
-    int flags = APR_CREATE | APR_WRITE | APR_BINARY | APR_EXCL;
+    int flags = APR_FOPEN_CREATE | APR_FOPEN_WRITE | APR_FOPEN_BINARY 
+                | APR_FOPEN_EXCL;
     apr_status_t rv;
 
     if (APLOGrtrace3(r)) {
@@ -2075,7 +2077,8 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
 
     vfile = dobj->hdrsfile;
 
-    flags = APR_CREATE | APR_WRITE | APR_BINARY | APR_EXCL | APR_BUFFERED;
+    flags = APR_FOPEN_CREATE | APR_FOPEN_WRITE | APR_FOPEN_BINARY 
+            | APR_FOPEN_EXCL | APR_FOPEN_BUFFERED;
     rv = apr_file_mktemp(&dobj->tfd, dobj->tempfile, flags, r->pool);
     if (rv != APR_SUCCESS) {
         return rv;
@@ -3010,7 +3013,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
     /* Only perform these actions when called the first time */
     if(!dobj->store_body_called) {
-        int flags = APR_READ|APR_BINARY;
+        int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
 
         dobj->store_body_called = TRUE;
         if (APLOGrtrace4(r)) {
@@ -3144,7 +3147,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 return rv;
             }
             else { /* APR_SUCCESS */
-                int flags = APR_READ|APR_BINARY;
+                int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
                 apr_finfo_t wfinfo, rfinfo;
 
                 dobj->errcleanflags |= ERRCLEAN_BODY;
