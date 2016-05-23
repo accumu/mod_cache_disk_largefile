@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.1 2016/05/19 13:21:37 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.2 2016/05/23 14:00:02 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1153,10 +1153,10 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
     apr_status_t rc;
     apr_finfo_t localfinfo;
 
-    if (APLOGtrace3(ap_server_conf)) {
+    if (APLOGtrace2(ap_server_conf)) {
         apr_uint64_t uinode = inode;
 
-        ap_log_error(APLOG_MARK, APLOG_TRACE3, 0, ap_server_conf,
+        ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, ap_server_conf,
                 "Called check_dest_invalid.  fd: %pp  "
                 "finfo: %pp  "
                 "now: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
@@ -1189,8 +1189,8 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
         /* Get mtime and nlink for our opened destfile */
         rc = apr_file_info_get(finfo, APR_FINFO_NORM, fd);
         if(rc != APR_SUCCESS && !APR_STATUS_IS_INCOMPLETE(rc)) {
-            if (APLOGtrace1(ap_server_conf)) {
-                ap_log_error(APLOG_MARK, APLOG_TRACE1, rc, ap_server_conf,
+            if (APLOGtrace2(ap_server_conf)) {
+                ap_log_error(APLOG_MARK, APLOG_TRACE2, rc, ap_server_conf,
                         "check_dest_invalid: fd: %pp  "
                         "apr_file_info_get() failed", fd);
             }
@@ -1200,8 +1200,8 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
 
     /* If link count is zero, file is deleted */
     if(finfo->valid & APR_FINFO_NLINK && finfo->nlink == 0) {
-        if (APLOGtrace1(ap_server_conf)) {
-                ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ap_server_conf,
+        if (APLOGtrace2(ap_server_conf)) {
+                ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, ap_server_conf,
                              "check_dest_invalid: fd: %pp  "
                              "deleted (nlinks==0)", fd);
         }
@@ -1210,10 +1210,10 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
 
     /* Check if correct inode if provided */
     if(inode && finfo->valid & APR_FINFO_IDENT && finfo->inode != inode) {
-        if (APLOGtrace1(ap_server_conf)) {
+        if (APLOGtrace2(ap_server_conf)) {
                 apr_uint64_t fuinode=finfo->inode, uinode = inode;
 
-                ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, ap_server_conf,
+                ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, ap_server_conf,
                              "check_dest_invalid: "
                              "finfo->inode %" APR_UINT64_T_HEX_FMT " != "
                              "inode %" APR_UINT64_T_HEX_FMT,
@@ -1235,8 +1235,8 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
                 ) 
           )
         {
-            if (APLOGtrace1(ap_server_conf)) {
-                    ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, 
+            if (APLOGtrace2(ap_server_conf)) {
+                    ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, 
                                  ap_server_conf,
                                  "check_dest_invalid: fd: %pp  "
                                  "stale (lastmod "
@@ -1263,8 +1263,8 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
                 (finfo->mtime != finfo->ctime ||
                  finfo->mtime < (now - updtimeout)) )
         {
-            if (APLOGtrace1(ap_server_conf)) {
-                    ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, 
+            if (APLOGtrace2(ap_server_conf)) {
+                    ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, 
                                  ap_server_conf,
                                  "check_dest_invalid: fd: %pp  "
                                  "stale (size OK, mtime "
@@ -1299,8 +1299,8 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
         if(finfo->valid & APR_FINFO_CSIZE && finalsize > 0 &&
                 finfo->csize == 0 && finfo->ctime < (now - updtimeout))
         {
-            if (APLOGtrace1(ap_server_conf)) {
-                    ap_log_error(APLOG_MARK, APLOG_TRACE1, 0, 
+            if (APLOGtrace2(ap_server_conf)) {
+                    ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, 
                                  ap_server_conf,
                                  "check_dest_invalid: fd: %pp  "
                                  "csize == 0", fd);
@@ -1309,8 +1309,8 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
         }
     }
 
-    if (APLOGtrace3(ap_server_conf)) {
-        ap_log_error(APLOG_MARK, APLOG_TRACE3, 0, ap_server_conf,
+    if (APLOGtrace2(ap_server_conf)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, ap_server_conf,
                 "check_dest_invalid:  fd: %pp  "
                 "returning SUCCESS", fd);
     }
@@ -1625,8 +1625,8 @@ static apr_status_t commit_entity(cache_handle_t *h, request_rec *r)
     disk_cache_object_t *dobj = (disk_cache_object_t*) h->cache_obj->vobj;
 
 
-    if (APLOGrtrace1(r)) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called commit_entity.  "
+    if (APLOGrtrace3(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r, "Called commit_entity.  "
                       "URL: %s", dobj->name);
     }
 
@@ -2436,8 +2436,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
     }
 
-    if (APLOGrtrace3(r)) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+    if (APLOGrtrace1(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
                 "store_headers done.  URL: %s  "
                 "initial_size: %" APR_OFF_T_FMT "  "
                 "lastmod: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT,
@@ -2474,8 +2474,8 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
     apr_off_t destfinalsize = destoff+len;
     int err;
 
-    if (APLOGtrace4(ap_server_conf)) {
-        ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+    if (APLOGtrace2(ap_server_conf)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, ap_server_conf,
                 "Called copy_file_region.  bufsize: %" APR_SIZE_T_FMT "  "
                 "srcfd: %pp  destfd: %pp  srcoff: %" APR_OFF_T_FMT "  "
                 "destoff: %" APR_OFF_T_FMT "  len: %" APR_OFF_T_FMT,
@@ -2684,14 +2684,18 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
               case we can check if the current filesize matches the length
               we think it is */
     rc = apr_file_info_get(&finfo, APR_FINFO_MTIME, srcfd);
-    if(rc != APR_SUCCESS) {
-        return rc;
-    }
-    if(starttime < finfo.mtime) {
-        return APR_EGENERAL;
+    if(rc == APR_SUCCESS) {
+        if(starttime < finfo.mtime) {
+            rc = APR_EGENERAL;
+        }
     }
 
-    return APR_SUCCESS;
+    if (APLOGtrace2(ap_server_conf)) {
+        ap_log_error(APLOG_MARK, APLOG_TRACE2, rc, ap_server_conf,
+                "copy_file_region: Done.");
+    }
+
+    return rc;
 }
 
 
@@ -3350,8 +3354,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     rv = APR_ENOMEM;
                     break;
                 }
-                if (APLOGrtrace1(r)) {
-                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                if (APLOGrtrace3(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                             "store_body: URL %s added diskcache out bucket "
                             "start %" APR_OFF_T_FMT " "
                             "length %" APR_OFF_T_FMT,
@@ -3436,8 +3440,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 /* Just extend the existing file cache bucket */
                 /* FIXME: This isn't large-file safe on 32bit platforms */
                 fbout->length += written;
-                if (APLOGrtrace1(r)) {
-                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                if (APLOGrtrace3(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                             "URL %s extended out brigade to len %" 
                             APR_OFF_T_FMT " off %" APR_OFF_T_FMT,
                             dobj->name, fbout->length, fbout->start);
@@ -3446,8 +3450,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             else {
                 fbout = apr_brigade_insert_file(out, dobj->bfd_read, 
                                             dobj->file_size, written, r->pool);
-                if (APLOGrtrace1(r)) {
-                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                if (APLOGrtrace3(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                                  "URL %s added out brigade len %" APR_OFF_T_FMT
                                  " off %" APR_OFF_T_FMT,
                                  dobj->name, written, dobj->file_size);
@@ -3563,8 +3567,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         dobj->tpool = NULL;
     }
 
-    if (APLOGrtrace4(r)) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
+    if (APLOGrtrace1(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
                       "store_body: All done, returning SUCCESS");
     }
     return APR_SUCCESS;
