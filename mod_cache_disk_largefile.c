@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.3 2016/05/23 14:17:49 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.4 2016/05/25 13:03:15 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -736,6 +736,7 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
                      "Unable to create temporary pool");
         return DECLINED;
     }
+    apr_pool_tag(dobj->tpool, "mod_cache_disk_largefile (create_entity)");
     dobj->tbuf = NULL;
 
     dobj->name = obj->key;
@@ -1455,6 +1456,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
                      "Unable to create temporary pool");
         return DECLINED;
     }
+    apr_pool_tag(dobj->tpool, "mod_cache_disk_largefile (open_entity)");
     dobj->tbuf = NULL;
 
     /* Save the cache root */
