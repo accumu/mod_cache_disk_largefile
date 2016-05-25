@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.4 2016/05/25 13:03:15 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.5 2016/05/25 13:58:32 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1621,7 +1621,6 @@ static int remove_url(cache_handle_t *h, request_rec *r)
     return OK;
 }
 
-/* FIXME: Do we have anything that needs to be done here? */
 static apr_status_t commit_entity(cache_handle_t *h, request_rec *r)
 {
     disk_cache_object_t *dobj = (disk_cache_object_t*) h->cache_obj->vobj;
@@ -1630,6 +1629,17 @@ static apr_status_t commit_entity(cache_handle_t *h, request_rec *r)
     if (APLOGrtrace3(r)) {
         ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r, "Called commit_entity.  "
                       "URL: %s", dobj->name);
+    }
+
+    /* Destroy temporary pool and buffer */
+    if(dobj->tpool != NULL) {
+        if (APLOGrtrace4(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
+                          "store_body: tpool cleanup");
+        }
+        dobj->tbuf = NULL;
+        apr_pool_destroy(dobj->tpool);
+        dobj->tpool = NULL;
     }
 
     return APR_SUCCESS;
@@ -3028,9 +3038,19 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     if(dobj->initial_size == 0) {
         /* Don't waste a body cachefile on a 0 length body */
         APR_BRIGADE_CONCAT(out, in);
-        if (APLOGrtrace4(r)) {
-            ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
+        if (APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                           "store_body: initial_size==0, bypassing");
+        }
+        return APR_SUCCESS;
+    }
+
+    if(r->header_only) {
+        /* Don't cache body just because of HEAD requests */
+        APR_BRIGADE_CONCAT(out, in);
+        if (APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                          "store_body: header_only, bypassing");
         }
         return APR_SUCCESS;
     }
@@ -3618,17 +3638,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     }
 
     dobj->errcleanflags &= ~ERRCLEAN_BODY;
-
-    /* Destroy temporary pool and buffer */
-    if(dobj->tpool != NULL) {
-        if (APLOGrtrace4(r)) {
-            ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                          "store_body: tpool cleanup");
-        }
-        dobj->tbuf = NULL;
-        apr_pool_destroy(dobj->tpool);
-        dobj->tpool = NULL;
-    }
 
     if (APLOGrtrace1(r)) {
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
