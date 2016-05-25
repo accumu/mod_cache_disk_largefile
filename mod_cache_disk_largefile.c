@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.2 2016/05/23 14:00:02 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.3 2016/05/23 14:17:49 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2260,7 +2260,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     }
 
     if (APLOGrtrace1(r)) {
-        apr_uint64_t bodyinode=dobj->bodyinode;
+        apr_uint64_t dobj_bodyinode=dobj->bodyinode;
+        apr_uint64_t diskinfo_bodyinode=dobj->disk_info.bodyinode;
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called store_headers.  "
                       "URL: %s  "
                       "dobj->skipstore: %d  "
@@ -2272,12 +2273,14 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
                       "disk_info.expire: %" APR_OFF_T_FMT "  "
                       "info->date: %" APR_OFF_T_FMT "  "
                       "disk_info.date: %" APR_OFF_T_FMT "  "
-                      "dobj->bodyinode: %" APR_UINT64_T_FMT
+                      "dobj->bodyinode: %" APR_UINT64_T_FMT "  "
+                      "disk_info.bodyinode: %" APR_UINT64_T_FMT
                       , dobj->name, dobj->skipstore, 
                       dobj->lastmod, dobj->disk_info.lastmod,
                       dobj->initial_size, dobj->disk_info.file_size,
                       r->request_time, dobj->disk_info.expire,
-                      info->date, dobj->disk_info.date, bodyinode);
+                      info->date, dobj->disk_info.date, dobj_bodyinode,
+                      diskinfo_bodyinode);
     }
 
     if(dobj->hfd) {
@@ -2956,6 +2959,41 @@ static unsigned int brigade_single_seqfile(request_rec *r,
 }
 
 
+static apr_status_t preallocate_file(request_rec *r, apr_file_t *fd, 
+                                     apr_off_t size)
+{
+    apr_status_t rv;
+
+#ifdef __linux
+    int bfd_os;
+
+    rv = apr_os_file_get(&bfd_os, fd);
+    if(rv != APR_SUCCESS) {
+        return rv;
+    }
+
+    if(fallocate(bfd_os, FALLOC_FL_KEEP_SIZE, 0, size) != 0) 
+    {
+        /* Only choke on relevant errors */
+        if(errno == EBADF || errno == ENOSPC || errno == EIO) {
+            rv = APR_FROM_OS_ERROR(errno);
+        }
+    }
+
+    if (APLOGrtrace4(r)) {
+        const char *fname;
+        apr_file_name_get(&fname, fd);
+
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE4, APR_FROM_OS_ERROR(errno), r,
+                "preallocate_file: %" APR_OFF_T_FMT "  "
+                "%s", size, fname);
+    }
+#endif /* __linux */
+
+    return rv;
+}
+
+
 static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                apr_bucket_brigade *in, apr_bucket_brigade *out)
 {
@@ -2982,6 +3020,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         file_cache_errorcleanup(dobj, r);
         return APR_EGENERAL;
     }
+
+    /* FIXME: Don't store body when r->header_only  set */
 
     if(dobj->initial_size == 0) {
         /* Don't waste a body cachefile on a 0 length body */
@@ -3036,20 +3076,12 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                       dobj->lastmod);
             if(rv == APR_SUCCESS) {
                 /* Assume it's a valid cached bodyfile, either being cached
-                   of fully cached */
+                   or fully cached */
                 int needhdrupdate = FALSE;
                 /* skipstore can also be set by the first call
                    to store_headers */
                 int hdrskipstore = dobj->skipstore;
                 int bodyskipstore = FALSE;
-
-                if(dobj->bodyinode == 0 && !hdrskipstore) {
-                    needhdrupdate = TRUE;
-                }
-                dobj->bodyinode = firstfinfo.inode;
-
-                /* Note: File might still be written */
-                dobj->file_size = firstfinfo.size;
 
                 /* Do skipstore (ie, reuse already cached body) if either:
                    - initial_size >= 0
@@ -3064,6 +3096,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                             apr_time_sec(firstfinfo.mtime)) 
                     {
                         dobj->initial_size = firstfinfo.size;
+                        dobj->file_size = firstfinfo.size;
+
                         if(!hdrskipstore) {
                             /* Update header information with known size only
                                if initial call to store_headers didn't set
@@ -3072,6 +3106,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                             needhdrupdate = TRUE;
                         }
                         bodyskipstore = TRUE;
+
                         if (APLOGrtrace4(r)) {
                             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, rv, r,
                                           "store_body: skipstore, "
@@ -3083,9 +3118,21 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 }
                 else {
                     bodyskipstore = TRUE;
+
+                    if(dobj->bodyinode != firstfinfo.inode) {
+                        if(!hdrskipstore) {
+                            dobj->bodyinode = firstfinfo.inode;
+                            needhdrupdate = TRUE;
+                        }
+                    }
+
+                    /* Note: File might still be written */
+                    dobj->file_size = firstfinfo.size;
+
                     if (APLOGrtrace4(r)) {
                         ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                                      "store_body: skipstore (found cached body)");
+                                      "store_body: skipstore "
+                                      "(found cached body)");
                     }
                 }
                 if(needhdrupdate) {
@@ -3114,35 +3161,42 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                                &(dobj->bfd_write), 
                                dobj->lastmod, dobj->initial_size,
                                conf->updtimeout);
-#ifdef __linux
-            /* Use Linux fallocate() to preallocate the file to avoid
+
+            /* Preallocate the file to avoid
                fragmentation and ENOSPC surprises */
             if(rv == APR_SUCCESS) {
-                int bfd_os;
-                rv = apr_os_file_get(&bfd_os, dobj->bfd_write);
-                if(rv == APR_SUCCESS) {
-                    if(fallocate(bfd_os, FALLOC_FL_KEEP_SIZE, 0, 
-                                 dobj->initial_size) != 0) 
-                    {
-                        /* Only choke on relevant errors */
-                        if(errno == EBADF || errno == ENOSPC || errno == EIO) {
-                            rv = APR_FROM_OS_ERROR(errno);
-                        }
-                    }
-                }
+                rv = preallocate_file(r, dobj->bfd_write, dobj->initial_size);
             }
-#endif /* __linux */
+
             if(rv == CACHE_EEXIST) {
                 /* Someone else beat us to storing this */
+
+                int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
+
                 if (APLOGrtrace4(r)) {
                     ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                                   "store_body: skipstore (open_new_file)");
                 }
                 dobj->skipstore = TRUE;
+
+                /* Just assume that if we can open a file, it's the right one.
+                   Someone just opened it for writing, after all */
+                rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
+                                   0, fdpool);
+                if(rv != APR_SUCCESS) {
+                    dobj->bfd_read = NULL; /* Clear it to play it safe */
+
+                    if (APLOGrtrace1(r)) {
+                        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, rv, r,
+                                      "store_body: skipstore (open_new_file): "
+                                      "failed to open bfd_read");
+                    }
+                }
+
             }
             else if(rv != APR_SUCCESS) {
-                if (APLOGrtrace4(r)) {
-                    ap_log_rerror(APLOG_MARK, APLOG_TRACE4, rv, r,
+                if (APLOGrtrace1(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, rv, r,
                                   "store_body: open_new_file failed");
                 }
                 dobj->errcleanflags |= ERRCLEAN_HEADER;
@@ -3215,11 +3269,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         }
         
         if(dobj->skipstore) {
+            if( dobj->initial_size > 0 && dobj->bfd_read) {
             ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
                           "Reusing cached body for URL %s, len %"
                           APR_OFF_T_FMT, dobj->name, dobj->initial_size);
 
-            if( dobj->initial_size > 0 ) {
                 /* Try to replace the body with the cached instance */
                 if (APLOGrtrace4(r)) {
                     ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
@@ -3236,6 +3290,13 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                         ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                                 "store_body: body replaced");
                     }
+                }
+            }
+            else {
+                if (APLOGrtrace1(r)) {
+                    ap_log_rerror(APLOG_MARK, APLOG_TRACE1, rv, r,
+                                  "store_body: URL %s: "
+                                  "skipstore, but no bfd_read", dobj->name);
                 }
             }
         }
