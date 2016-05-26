@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.12 2016/05/26 12:57:33 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.13 2016/05/26 12:58:39 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2566,8 +2566,8 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
                 ap_log_error(APLOG_MARK, APLOG_DEBUG, rc, ap_server_conf,
                              "copy_file_region: posix_fadvise");
             }
-            if (APLOGtrace4(ap_server_conf)) {
-                ap_log_error(APLOG_MARK, APLOG_TRACE4, 0, ap_server_conf,
+            if (APLOGtrace5(ap_server_conf)) {
+                ap_log_error(APLOG_MARK, APLOG_TRACE5, 0, ap_server_conf,
                         "copy_file_region: fadvise WILLNEED off: %"
                         APR_OFF_T_FMT "  amount: %" APR_OFF_T_FMT,
                         srcoff_os, fadvamount);
