@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.10 2016/05/26 11:39:21 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.11 2016/05/26 11:47:03 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3304,15 +3304,29 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
            open_body_timeout and reuse it here */
         if(dobj->skipstore) {
             if( dobj->initial_size > 0 && dobj->bfd_read) {
-            ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                          "Reusing cached body for URL %s, len %"
-                          APR_OFF_T_FMT, dobj->name, dobj->initial_size);
+
+                if(dobj->file_size == 0) {
+                    if (APLOGrtrace4(r)) {
+                        ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
+                                      "store_body: skipstore: wait for data "
+                                      "in body cache file");
+                    }
+
+                    rv = open_body_timeout(r, h->cache_obj, dobj);
+                    if( rv != APR_SUCCESS) {
+                        ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                                "store_body: URL %s:  %s:  failed waiting "
+                                "for data in cached body file",
+                                dobj->name, dobj->bodyfile);
+
+                        return rv;
+                    }
+                }
 
                 /* Try to replace the body with the cached instance */
-                if (APLOGrtrace4(r)) {
-                    ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                                  "store_body: replacing body with cached instance");
-                }
+                ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
+                              "Reusing cached body for URL %s, len %"
+                              APR_OFF_T_FMT, dobj->name, dobj->initial_size);
 
                 /* in case we've already sent part, e.g. via mod_proxy */
                 dobj->bytes_sent = r->bytes_sent;
