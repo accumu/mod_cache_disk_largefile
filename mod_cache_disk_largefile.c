@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.9 2016/05/26 11:36:21 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.10 2016/05/26 11:39:21 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3295,6 +3295,13 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             }
         }
         
+        /* FIXME: Perhaps wait for data in file rather than blindly assume that
+           the store by some other process will succesd? Otherwise we can
+           potentially have many requests failing with 0 bytes return in
+           out-of-space situations, as prealloc will cause writes to fail
+           immediately.
+           The solution probably involves breaking out some of the code in
+           open_body_timeout and reuse it here */
         if(dobj->skipstore) {
             if( dobj->initial_size > 0 && dobj->bfd_read) {
             ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
