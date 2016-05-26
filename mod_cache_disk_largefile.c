@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.7 2016/05/26 08:12:13 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.8 2016/05/26 09:45:32 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3015,9 +3015,18 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     apr_status_t rv = APR_SUCCESS;
     apr_pool_t *fdpool = NULL;
     int did_bgcopy = FALSE;
+    int readflags = APR_FOPEN_READ | APR_FOPEN_BINARY;
     disk_cache_object_t *dobj = (disk_cache_object_t *) h->cache_obj->vobj;
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
                                                  &cache_disk_largefile_module);
+
+#if APR_HAS_SENDFILE
+    core_dir_config *pdconf = ap_get_core_module_config(r->per_dir_config);
+    /* When we are in the quick handler we don't have the per-directory
+     * configuration, so this check only takes the global setting of
+     * the EnableSendFile directive into account.  */
+    readflags |= AP_SENDFILE_ENABLED(pdconf->enable_sendfile);
+#endif  
 
     if (APLOGrtrace1(r)) {
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called store_body.  "
@@ -3081,15 +3090,14 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
     /* Only perform these actions when called the first time */
     if(!dobj->store_body_called) {
-        int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
-
         dobj->store_body_called = TRUE;
+
         if (APLOGrtrace4(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                           "store_body: first call");
         }
 
-        rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
+        rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, readflags, 
                            0, fdpool);
 
         if(rv == APR_SUCCESS) {
@@ -3195,8 +3203,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             if(rv == CACHE_EEXIST) {
                 /* Someone else beat us to storing this */
 
-                int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
-
                 if (APLOGrtrace4(r)) {
                     ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                                   "store_body: skipstore (open_new_file)");
@@ -3205,7 +3211,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
                 /* Just assume that if we can open a file, it's the right one.
                    Someone just opened it for writing, after all */
-                rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
+                rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, readflags, 
                                    0, fdpool);
                 if(rv != APR_SUCCESS) {
                     dobj->bfd_read = NULL; /* Clear it to play it safe */
@@ -3229,7 +3235,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 return rv;
             }
             else { /* APR_SUCCESS */
-                int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
                 apr_finfo_t wfinfo, rfinfo;
 
                 dobj->errcleanflags |= ERRCLEAN_BODY;
@@ -3259,7 +3264,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     }
                 }
 
-                rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 
+                rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, readflags, 
                                    0, fdpool);
 
                 if(rv != APR_SUCCESS) {
