@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.8 2016/05/26 09:45:32 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.9 2016/05/26 11:36:21 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3036,15 +3036,13 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         debug_rlog_brigade(APLOG_MARK, APLOG_TRACE1, 0, r, in, "store_body in");
     }
 
-    if(r->no_cache && dobj->initial_size >= 0) {
+    if(r->no_cache) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "store_body called for URL %s even though"
                      "no_cache is set", dobj->name);
         file_cache_errorcleanup(dobj, r);
         return APR_EGENERAL;
     }
-
-    /* FIXME: Don't store body when r->header_only  set */
 
     if(dobj->initial_size == 0) {
         /* Don't waste a body cachefile on a 0 length body */
@@ -3056,7 +3054,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         return APR_SUCCESS;
     }
 
-    if(r->header_only) {
+    if(r->header_only && dobj->initial_size >= 0) {
         /* Don't cache body just because of HEAD requests */
         APR_BRIGADE_CONCAT(out, in);
         if (APLOGrtrace3(r)) {
