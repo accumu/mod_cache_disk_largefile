@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.6 2016/05/25 19:44:23 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.7 2016/05/26 08:12:13 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2983,6 +2983,8 @@ static apr_status_t preallocate_file(request_rec *r, apr_file_t *fd,
     if(rv != APR_SUCCESS) {
         return rv;
     }
+
+    errno = 0; /* Not set on success */
 
     if(fallocate(bfd_os, FALLOC_FL_KEEP_SIZE, 0, size) != 0) 
     {
