@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.5 2016/05/25 13:58:32 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.6 2016/05/25 19:44:23 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1635,7 +1635,7 @@ static apr_status_t commit_entity(cache_handle_t *h, request_rec *r)
     if(dobj->tpool != NULL) {
         if (APLOGrtrace4(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                          "store_body: tpool cleanup");
+                          "commit_entity: tpool cleanup");
         }
         dobj->tbuf = NULL;
         apr_pool_destroy(dobj->tpool);
@@ -3025,7 +3025,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         debug_rlog_brigade(APLOG_MARK, APLOG_TRACE1, 0, r, in, "store_body in");
     }
 
-    if(r->no_cache) {
+    if(r->no_cache && dobj->initial_size >= 0) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "store_body called for URL %s even though"
                      "no_cache is set", dobj->name);
