@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.13 2016/05/26 12:58:39 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.14 2016/05/26 13:56:54 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -692,6 +692,21 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "URL %s partial content response not cached",
                      key);
+        return DECLINED;
+    }
+
+    /* Don't allow HEAD requests to trigger any caching operations. The
+       reason for this is the large-file nature of this caching module,
+       triggering the caching of a huge file just to satisfy a HEAD request
+       is potentially resource-intensive.
+       We could compromise and just cache a header, but then we get into
+       trouble if we want to revalidate it into a complete cached item within
+       the update timeout. */
+    /* FIXME: Make this configureable? */
+    if(r->header_only) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                     "URL %s not cached, header_only request", key);
+
         return DECLINED;
     }
 
@@ -1326,6 +1341,7 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
     apr_status_t rc;
     apr_finfo_t finfo;
     int flags = APR_FOPEN_READ | APR_FOPEN_BINARY;
+    unsigned int passes = 0;
     apr_interval_time_t loopdelay=CACHE_LOOP_MINSLEEP;
     cache_info *info = &(cache_obj->info);
     disk_cache_conf *conf = ap_get_module_config(r->server->module_config,
@@ -1348,20 +1364,46 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
         return APR_EGENERAL;
     }
 
+    if (APLOGrtrace2(r)) {
+        apr_time_t now = apr_time_now();
+
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE2, 0, r,
+                "Called open_body_timeout.  URL: %s  "
+                "bfd_read: %pp  "
+                "response_time: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
+                "now: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
+                "updtimeout: %" APR_TIME_T_FMT,
+                dobj->name, dobj->bfd_read,
+                apr_time_sec(info->response_time),
+                apr_time_usec(info->response_time),
+                apr_time_sec(now), apr_time_usec(now),
+                conf->updtimeout);
+    }
+
     /* Wait here until we get a body cachefile, data in it, and do quick sanity
      * check */
 
     while(1) {
+        passes++;
+
         if(dobj->bfd_read == NULL) {
             rc = apr_file_open(&dobj->bfd_read, dobj->bodyfile, flags, 0, r->pool);
             if(rc != APR_SUCCESS) {
                 if(info->response_time < (apr_time_now() - conf->updtimeout) ) {
-                    /* This usually means that the body simply wasn't cached,
-                       due to HEAD requests for example */
-                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
-                                 "Timed out waiting for bodyfile "
-                                 "%s for URL %s - caching failed?", 
-                                 dobj->bodyfile, dobj->name);
+                    if(passes <= 1) {
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                                     "No bodyfile %s for URL %s - "
+                                     "likely not cached due to "
+                                     "HEAD request",
+                                     dobj->bodyfile, dobj->name);
+                    }
+                    else {
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                                     "Timed out waiting for bodyfile "
+                                     "%s for URL %s - caching failed?", 
+                                     dobj->bodyfile, dobj->name);
+                    }
+
                     return CACHE_EDECLINED;
                 }
 
@@ -1445,6 +1487,12 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
         return DECLINED;
     }
 
+    if(APLOGrtrace3(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r, "Called open_entity.  "
+                      "URL: %s", key);
+    }
+
+
     /* Create and init the cache object */
     obj = apr_pcalloc(r->pool, sizeof(cache_object_t));
     dobj = apr_pcalloc(r->pool, sizeof(disk_cache_object_t));
@@ -1452,8 +1500,10 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
     rc = apr_pool_create(&(dobj->tpool), r->pool);
     if(rc != APR_SUCCESS) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
-                     "Unable to create temporary pool");
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, rc, r,
+                     "open_entity: URL: %s - Unable to create temporary pool",
+                     key);
+
         return DECLINED;
     }
     apr_pool_tag(dobj->tpool, "mod_cache_disk_largefile (open_entity)");
@@ -1474,6 +1524,11 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
         if(dobj->hfd != NULL) {
             apr_file_close(dobj->hfd);
             dobj->hfd = NULL;
+        }
+        if(APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
+                          "URL: %s - open_header_timeout failed, "
+                          "returning DECLINED", key);
         }
         return DECLINED;
     }
@@ -1498,12 +1553,33 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
             apr_file_close(dobj->hfd);
             dobj->hfd = NULL;
         }
+        if(APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
+                          "URL: %s - load_header_strings failed, "
+                          "returning DECLINED", key);
+        }
         return DECLINED;
     }
 
     /* Only need body cachefile if we have a body and this isn't a HEAD
        request */
     if(dobj->initial_size > 0 && !dobj->header_only) {
+        if(dobj->bodyfile == NULL) {
+            /* Force revalidation if body file name not present - this means
+               that only the headers were cached due to a HEAD request */
+
+            if(dobj->hfd != NULL) {
+                apr_file_close(dobj->hfd);
+                dobj->hfd = NULL;
+            }
+            if(APLOGrtrace3(r)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r, "open_entity: "
+                              "URL: %s - no bodyfile, "
+                              "returning DECLINED", key);
+            }
+               
+            return DECLINED;
+        }
         rc = open_body_timeout(r, obj, dobj);
         if(rc != APR_SUCCESS) {
             if(dobj->hfd != NULL) {
@@ -1513,6 +1589,11 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
             if(dobj->bfd_read != NULL) {
                 apr_file_close(dobj->bfd_read);
                 dobj->bfd_read = NULL;
+            }
+            if(APLOGrtrace3(r)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
+                              "URL: %s - open_body_timeout failed, "
+                              "returning DECLINED", key);
             }
             return DECLINED;
         }
@@ -1526,8 +1607,9 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     h->cache_obj->vobj = dobj;
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                 "Recalled status for cached URL %s from file %s",
+                 "open_entity: Recalled status for cached URL %s from file %s",
                  dobj->name, dobj->hdrsfile);
+
     return OK;
 }
 
@@ -1880,6 +1962,14 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
         return APR_EGENERAL;
     }
 
+    if(dobj->initial_size < 0) {
+        /* This should also never happen... */
+        ap_log_error(APLOG_MARK, APLOG_ERR, 0, ap_server_conf,
+                     "recall_body: Called but initial_size < 0, URL %s",
+                     dobj->name);
+        return APR_EGENERAL;
+    }
+
     /* Restore r->filename if not present */
     if(dobj->filename != NULL && dobj->rfilename != NULL && 
             *(dobj->rfilename) == NULL) 
@@ -1887,29 +1977,40 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
         *(dobj->rfilename) = dobj->filename;
     }
 
-    /* Insert as much as possible as regular file (ie. sendfile():able) */
-    /* We need to make sure to skip the beginning of the file if we've
-       already sent some bytes, e.g., due to mod_proxy */
-    if(dobj->file_size > dobj->bytes_sent) {
-        if(apr_brigade_insert_file(bb, dobj->bfd_read, dobj->bytes_sent, 
-                                   dobj->file_size - dobj->bytes_sent, p) == NULL) 
-        {
-            return APR_ENOMEM;
+    if(!dobj->header_only) {
+        /* Insert as much as possible as regular file (ie. sendfile():able) */
+        /* We need to make sure to skip the beginning of the file if we've
+           already sent some bytes, e.g., due to mod_proxy */
+        if(dobj->file_size > dobj->bytes_sent) {
+            if(apr_brigade_insert_file(bb, dobj->bfd_read, dobj->bytes_sent, 
+                                       dobj->file_size - dobj->bytes_sent, p) == NULL) 
+            {
+                return APR_ENOMEM;
+            }
+            bytes_already_done = dobj->file_size;
+        } else {
+            bytes_already_done = dobj->bytes_sent;
         }
-        bytes_already_done = dobj->file_size;
-    } else {
-        bytes_already_done = dobj->bytes_sent;
-    }
 
-    /* Insert any remainder as read-while-caching bucket */
-    if(bytes_already_done < dobj->initial_size) {
-        if(diskcache_brigade_insert(bb, dobj->bfd_read, bytes_already_done, 
-                                    dobj->initial_size - bytes_already_done,
-                                    conf->updtimeout, p
-                    ) == NULL) 
-        {
-            return APR_ENOMEM;
+        /* Insert any remainder as read-while-caching bucket */
+        if(bytes_already_done < dobj->initial_size) {
+            if(diskcache_brigade_insert(bb, dobj->bfd_read, bytes_already_done, 
+                                        dobj->initial_size - bytes_already_done,
+                                        conf->updtimeout, p
+                        ) == NULL) 
+            {
+                return APR_ENOMEM;
+            }
         }
+
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
+                     "recall_body: Succeeded for URL %s from file %s",
+                     dobj->name, dobj->bodyfile);
+    }
+    else {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
+                     "recall_body: No data inserted, header_only. URL %s",
+                     dobj->name);
     }
 
     e = apr_bucket_eos_create(bb->bucket_alloc);
@@ -1921,10 +2022,6 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
         apr_pool_destroy(dobj->tpool);
         dobj->tpool = NULL;
     }
-
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
-                 "recall_body: Succeeded for URL %s from file %s",
-                 dobj->name, dobj->bodyfile);
 
     return APR_SUCCESS;
 }
@@ -2191,7 +2288,8 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
     iov[niov].iov_base = (void*)dobj->name;
     iov[niov++].iov_len = disk_info.name_len;
 
-    if(dobj->initial_size > 0) {
+    if(dobj->initial_size > 0 && (!dobj->header_only || dobj->bodyinode != 0)) 
+    {
         /* We know the bodyfile is root/bodyname ... */
         char *bodyname = (char *) dobj->bodyfile + dobj->root_len + 1;
         disk_info.bodyname_len = strlen(bodyname);
@@ -2358,6 +2456,15 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "On-disk headers older than updtimeout",
+                              dobj->name);
+            }
+            hdrcurrent = FALSE;
+        }
+        else if(dobj->disk_info.bodyname_len == 0 && dobj->bodyfile != NULL) {
+            if (APLOGtrace3(ap_server_conf)) {
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                              "store_headers: URL: %s  not current: "
+                              "On-disk headers missing bodyfile",
                               dobj->name);
             }
             hdrcurrent = FALSE;
@@ -3050,16 +3157,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         if (APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                           "store_body: initial_size==0, bypassing");
-        }
-        return APR_SUCCESS;
-    }
-
-    if(r->header_only && dobj->initial_size >= 0) {
-        /* Don't cache body just because of HEAD requests */
-        APR_BRIGADE_CONCAT(out, in);
-        if (APLOGrtrace3(r)) {
-            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                          "store_body: header_only, bypassing");
         }
         return APR_SUCCESS;
     }
