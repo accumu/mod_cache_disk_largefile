@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.14 2016/05/26 13:56:54 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.15 2016/05/28 08:26:06 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -710,8 +710,8 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
         return DECLINED;
     }
 
-    if (APLOGtrace3(ap_server_conf)) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+    if (APLOGrtrace1(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
                       "create_entity called. r->filename: %s "
                       "finfo.filetype: %d "
                       "finfo.valid: %x "
@@ -721,8 +721,10 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
                       r->filename, r->finfo.filetype, r->finfo.valid, 
                       r->finfo.protection, 
                       r->finfo.fname?r->finfo.fname:"NULL", len);
-        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE3, 0, r, bb, 
-                           "create_entity bb");
+        if (APLOGrtrace2(r)) {
+            debug_rlog_brigade(APLOG_MARK, APLOG_TRACE2, 0, r, bb, 
+                               "create_entity bb");
+        }
     }
 
     /* Would really like to avoid caching of objects without
@@ -2398,7 +2400,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         int hdrcurrent = TRUE;
 
         if(dobj->disk_info.file_size < 0) {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "Header on disk indicating unknown size "
@@ -2407,7 +2409,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
             hdrcurrent = FALSE;
         }
         else if(dobj->initial_size < 0) {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "Unknown size, shouldn't really happen when"
@@ -2416,7 +2418,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
             hdrcurrent = FALSE;
         }
         else if(dobj->initial_size != dobj->disk_info.file_size) {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "This object and on-disk object size doesn't "
@@ -2425,7 +2427,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
             hdrcurrent = FALSE;
         }
         else if(dobj->bodyinode != dobj->disk_info.bodyinode) {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "Body inode doesn't match on-disk header",
@@ -2436,7 +2438,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         else if(dobj->lastmod != APR_DATE_BAD && 
                 dobj->lastmod != dobj->disk_info.lastmod)
         {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                                "Last-Modified does not match", dobj->name);
@@ -2444,7 +2446,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
             hdrcurrent = FALSE;
         }
         else if(dobj->disk_info.expire <= r->request_time) {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "On-disk headers expired", dobj->name);
@@ -2452,7 +2454,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
             hdrcurrent = FALSE;
         }
         else if(dobj->disk_info.date <= info->date - conf->updtimeout) {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "On-disk headers older than updtimeout",
@@ -2461,7 +2463,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
             hdrcurrent = FALSE;
         }
         else if(dobj->disk_info.bodyname_len == 0 && dobj->bodyfile != NULL) {
-            if (APLOGtrace3(ap_server_conf)) {
+            if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
                               "store_headers: URL: %s  not current: "
                               "On-disk headers missing bodyfile",
@@ -3140,7 +3142,10 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 "pools:  r: %pp  conn: %pp  in->p: %pp  out->p: %pp",
                 r->pool, r->connection->pool, in->p, out->p);
 
-        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE1, 0, r, in, "store_body in");
+        if (APLOGrtrace2(r)) {
+            debug_rlog_brigade(APLOG_MARK, APLOG_TRACE2, 0, r, in, 
+                               "store_body in");
+        }
     }
 
     if(r->no_cache) {
@@ -3682,8 +3687,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         return rv;
     }
 
-    if (APLOGrtrace1(r)) {
-        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE1, 0, r, out, "store_body out");
+    if (APLOGrtrace2(r)) {
+        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE2, 0, r, out, 
+                           "store_body out");
     }
 
     /* Drop out here if this wasn't the end */
