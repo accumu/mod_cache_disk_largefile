@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.17 2016/06/07 11:37:24 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.18 2016/06/09 16:27:36 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3397,9 +3397,15 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         }
         
         if(dobj->skipstore) {
-            if( dobj->initial_size > 0 && dobj->bfd_read) {
 
-                if(dobj->file_size == 0) {
+            /* Can only expect to succeed in opening a cached body for files
+               with a size ... */
+            if( dobj->initial_size > 0) {
+
+                /* If store_headers() sets skipstore, then we might not have
+                   bfd_read opened here if it hadn't been created yet by
+                   the thread that succeeded in writing the header! */
+                if(!dobj->bfd_read || dobj->file_size == 0) {
                     if (APLOGrtrace4(r)) {
                         ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                                       "store_body: skipstore: wait for data "
@@ -3434,11 +3440,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     }
                 }
             }
-            else {
-                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                              "store_body: URL %s: "
-                              "skipstore, but no bfd_read", dobj->name);
-            }
+
         }
         else {
             ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
@@ -3850,7 +3852,7 @@ static int post_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp,
 {
     int threaded_mpm;
 
-    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "post_config: %s started.",
+    ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, s, "post_config: %s started.",
                    rcsid);
 
     if(ap_mpm_query(AP_MPMQ_IS_THREADED, &threaded_mpm) == APR_SUCCESS
