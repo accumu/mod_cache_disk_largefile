@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.16 2016/05/30 11:05:52 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.17 2016/06/07 11:37:24 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3316,11 +3316,9 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 if(rv != APR_SUCCESS) {
                     dobj->bfd_read = NULL; /* Clear it to play it safe */
 
-                    if (APLOGrtrace1(r)) {
-                        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, rv, r,
-                                      "store_body: skipstore (open_new_file): "
-                                      "failed to open bfd_read");
-                    }
+                    ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                                  "store_body: skipstore (open_new_file): "
+                                  "failed to open bfd_read");
                 }
 
             }
