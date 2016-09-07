@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.18 2016/06/09 16:27:36 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.19 2016/06/09 18:51:20 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -481,10 +481,13 @@ static apr_status_t file_cache_errorcleanup(disk_cache_object_t *dobj,
         apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
     }
-    if( (dobj->errcleanflags & ERRCLEAN_HEADER) ) {
+    if( (dobj->errcleanflags & ERRCLEAN_HEADER && dobj->hdrsfile) ) {
         rc = apr_file_remove(dobj->hdrsfile, r->pool);
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
                 "file_cache_errorcleanup: Removed %s", dobj->hdrsfile);
+
+        /* Clear flag so we don't try again if called twice */
+        dobj->errcleanflags &= ~ERRCLEAN_HEADER;
     }
 
     if(dobj->bfd_read) {
@@ -495,10 +498,13 @@ static apr_status_t file_cache_errorcleanup(disk_cache_object_t *dobj,
         apr_file_close(dobj->bfd_write);
         dobj->bfd_write = NULL;
     }
-    if( (dobj->errcleanflags & ERRCLEAN_BODY) ) {
+    if( (dobj->errcleanflags & ERRCLEAN_BODY && dobj->bodyfile) ) {
         rc = apr_file_remove(dobj->bodyfile, r->pool);
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
                 "file_cache_errorcleanup: Removed %s", dobj->bodyfile);
+
+        /* Clear flag so we don't try again if called twice */
+        dobj->errcleanflags &= ~ERRCLEAN_BODY;
     }
 
     if (dobj->tfd) {
@@ -1523,10 +1529,8 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
        valid size information for the body */
     rc = open_header_timeout(obj, dobj, r, key, conf);
     if(rc != APR_SUCCESS) {
-        if(dobj->hfd != NULL) {
-            apr_file_close(dobj->hfd);
-            dobj->hfd = NULL;
-        }
+        file_cache_errorcleanup(dobj, r);
+
         if(APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
                           "URL: %s - open_header_timeout failed, "
@@ -1551,14 +1555,35 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     /* Load and check strings (URL, bodyfile, filename) */
     rc = load_header_strings(r, dobj);
     if(rc != APR_SUCCESS) {
-        if(dobj->hfd != NULL) {
-            apr_file_close(dobj->hfd);
-            dobj->hfd = NULL;
-        }
+        file_cache_errorcleanup(dobj, r);
+
         if(APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
                           "URL: %s - load_header_strings failed, "
                           "returning DECLINED", key);
+        }
+        return DECLINED;
+    }
+
+    /* Directory listings and other dynamic content might change due to
+       reloads (upgrades, config changes, ...). In order to promote those
+       changes we resort to cleaning out non-file objects older than
+       restart time to force re-caching them. */
+    if(dobj->disk_info.filetype != APR_REG 
+            && info->response_time < ap_scoreboard_image->global->restart_time)
+    {
+        dobj->errcleanflags |= ERRCLEAN_HEADER | ERRCLEAN_BODY;
+        file_cache_errorcleanup(dobj, r);
+
+        if(APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
+                          "URL: %s - filetype %d "
+                          "response_time %" APR_TIME_T_FMT " "
+                          "older than restart_time %" APR_TIME_T_FMT " "
+                          ", removed old object and returning DECLINED", 
+                          key, dobj->disk_info.filetype,
+                          info->response_time,
+                          ap_scoreboard_image->global->restart_time);
         }
         return DECLINED;
     }
@@ -1570,10 +1595,8 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
             /* Force revalidation if body file name not present - this means
                that only the headers were cached due to a HEAD request */
 
-            if(dobj->hfd != NULL) {
-                apr_file_close(dobj->hfd);
-                dobj->hfd = NULL;
-            }
+            file_cache_errorcleanup(dobj, r);
+
             if(APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r, "open_entity: "
                               "URL: %s - no bodyfile, "
@@ -1584,14 +1607,8 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
         }
         rc = open_body_timeout(r, obj, dobj);
         if(rc != APR_SUCCESS) {
-            if(dobj->hfd != NULL) {
-                apr_file_close(dobj->hfd);
-                dobj->hfd = NULL;
-            }
-            if(dobj->bfd_read != NULL) {
-                apr_file_close(dobj->bfd_read);
-                dobj->bfd_read = NULL;
-            }
+            file_cache_errorcleanup(dobj, r);
+
             if(APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
                               "URL: %s - open_body_timeout failed, "
@@ -2277,6 +2294,11 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
     disk_info.file_size = dobj->initial_size;
     disk_info.bodyinode = dobj->bodyinode;
     disk_info.lastmod = dobj->lastmod;
+    disk_info.filetype = APR_NOFILE;
+
+    if(r->finfo.valid & APR_FINFO_TYPE) {
+        disk_info.filetype = r->finfo.filetype;
+    }
 
     memcpy(&disk_info.control, &h->cache_obj->info.control, sizeof(cache_control_t));
 
