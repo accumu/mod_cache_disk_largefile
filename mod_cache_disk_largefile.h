@@ -38,7 +38,8 @@
 #define DISK_FORMAT_VERSION_OLD2 5
 #define DISK_FORMAT_VERSION_OLD3 7
 #define DISK_FORMAT_VERSION_OLD4 8
-#define DISK_FORMAT_VERSION 9
+#define DISK_FORMAT_VERSION_OLD5 9
+#define DISK_FORMAT_VERSION 10
 
 #define CACHE_HEADER_SUFFIX ".header"
 #define CACHE_BODY_SUFFIX   ".body"
@@ -106,6 +107,9 @@ typedef struct {
 
     /* The parsed cache control header */
     cache_control_t control;
+
+    /* The filetype of the cached object, if any */
+    apr_filetype_e filetype;
 
     /* The size of the entity name that follows. */
     apr_uint32_t name_len;
