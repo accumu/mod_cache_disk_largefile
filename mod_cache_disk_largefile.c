@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.22 2016/09/16 13:52:38 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.23 2016/09/16 13:55:50 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -775,59 +775,56 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     dobj->bytes_sent = 0;
 
 
-    /* FIXME: This just falls through and returns OK if r->filename is NULL!
-       */
+    /* As of httpd 2.4 r->filename and r->finfo always seem to be set,
+       faked together from URL and document-root if there is no backing file!
+
+       r->finfo.filetype seems to be correct when it's a real file though...
+     */
+
     if(r->filename != NULL && strlen(r->filename) > 0) {
         dobj->filename = r->filename;
+    }
 
-        /* As of httpd 2.4 r->filename and r->finfo always seem to be set,
-           faked together from URL and document-root if there is no backing
-           file!
+    if(r->finfo.filetype == APR_REG) {
+        char buf[34];
+        char *str;
+        int usedevino = TRUE;
 
-           r->finfo.filetype seems to be correct when this is a real file
-           though...
-         */
-        if(r->finfo.filetype == APR_REG) {
-            char buf[34];
-            char *str;
-            int usedevino = TRUE;
+        /* finfo.protection (st_mode) set to zero if no such file */
+        if(r->finfo.protection == 0) {
+            usedevino = FALSE;
+        }
+        /* Is the device/inode in r->finfo valid? */
+        if(!(r->finfo.valid & APR_FINFO_IDENT)) {
+            usedevino = FALSE;
+        }
 
-            /* finfo.protection (st_mode) set to zero if no such file */
-            if(r->finfo.protection == 0) {
-                usedevino = FALSE;
-            }
-            /* Is the device/inode in r->finfo valid? */
-            if(!(r->finfo.valid & APR_FINFO_IDENT)) {
-                usedevino = FALSE;
-            }
+        /* When possible, hash the body on dev:inode to minimize file
+           duplication. */
+        if(usedevino) {
+            apr_uint64_t device = r->finfo.device; /* Avoid ifdef ... */
+            apr_uint64_t inode  = r->finfo.inode;  /* ... type-mess */
 
-            /* When possible, hash the body on dev:inode to minimize file
-               duplication. */
-            if(usedevino) {
-                apr_uint64_t device = r->finfo.device; /* Avoid ifdef ... */
-                apr_uint64_t inode  = r->finfo.inode;  /* ... type-mess */
-
-                apr_snprintf(buf, sizeof(buf), "%016" APR_UINT64_T_HEX_FMT ":%016" 
-                             APR_UINT64_T_HEX_FMT, device, inode);
-                str = buf;
-            }
-            else {
-                str = r->filename;
-            }
-
-            dobj->bodyfile = cache_file(r->pool, conf, NULL, str, 
-                                        CACHE_BODY_SUFFIX);
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                         "File %s was hashed using %s into %s",
-                         r->filename, str, dobj->bodyfile);
+            apr_snprintf(buf, sizeof(buf), "%016" APR_UINT64_T_HEX_FMT ":%016" 
+                         APR_UINT64_T_HEX_FMT, device, inode);
+            str = buf;
         }
         else {
-            dobj->bodyfile = cache_file(r->pool, conf, NULL, key, 
-                                        CACHE_BODY_SUFFIX);
-            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                         "Body of URL %s was hashed into %s",
-                         key, dobj->bodyfile);
+            str = r->filename;
         }
+
+        dobj->bodyfile = cache_file(r->pool, conf, NULL, str, 
+                                    CACHE_BODY_SUFFIX);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                     "File %s was hashed using %s into %s",
+                     r->filename, str, dobj->bodyfile);
+    }
+    else {
+        dobj->bodyfile = cache_file(r->pool, conf, NULL, key, 
+                                    CACHE_BODY_SUFFIX);
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                     "Body of URL %s was hashed into %s",
+                     key, dobj->bodyfile);
     }
 
     return OK;
