@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.19 2016/06/09 18:51:20 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.20 2016/09/07 20:21:35 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2312,6 +2312,12 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
     iov[niov].iov_base = (void*)dobj->name;
     iov[niov++].iov_len = disk_info.name_len;
 
+    /* FIXME: Isn't this wrong?
+              - What happens if a HEAD request triggers rewriting
+                the headers?
+              - Shouldn't we require both non-header_only and a bodyinode?
+              - And isn't it the bodyname we should require instead of bodyinode?
+     */
     if(dobj->initial_size > 0 && (!dobj->header_only || dobj->bodyinode != 0)) 
     {
         /* We know the bodyfile is root/bodyname ... */
@@ -2565,6 +2571,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
 
     dobj->errcleanflags |= ERRCLEAN_HEADER;
 
+    /* FIXME: verify here that we have everything needed if header rewrite
+              was triggered by a header_only request? */
     rv = store_disk_header(h, r, info);
     if(rv != APR_SUCCESS) {
         file_cache_errorcleanup(dobj, r);
