@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.23 2016/09/16 13:55:50 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.24 2016/09/16 14:05:03 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2546,6 +2546,16 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
     }
 
+    if(r->header_only && (dobj->initial_size < 0 || dobj->bodyinode == 0)) {
+        if (APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                          "store_headers: URL: %s  header_only rewrite but "
+                          "missing body size/inode",
+                          dobj->name);
+        }
+        dobj->skipstore = TRUE;
+    }
+
     if(dobj->skipstore) {
         if(dobj->hfd) {
             apr_file_close(dobj->hfd);
@@ -2558,8 +2568,6 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
 
     dobj->errcleanflags |= ERRCLEAN_HEADER;
 
-    /* FIXME: verify here that we have everything needed if header rewrite
-              was triggered by a header_only request? */
     rv = store_disk_header(h, r, info);
     if(rv != APR_SUCCESS) {
         file_cache_errorcleanup(dobj, r);
