@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.20 2016/09/07 20:21:35 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.21 2016/09/16 13:19:26 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -775,6 +775,8 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     dobj->bytes_sent = 0;
 
 
+    /* FIXME: This just falls through and returns OK if r->filename is NULL!
+       */
     if(r->filename != NULL && strlen(r->filename) > 0) {
         dobj->filename = r->filename;
 
