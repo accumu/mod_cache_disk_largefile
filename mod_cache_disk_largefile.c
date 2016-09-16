@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.24 2016/09/16 14:05:03 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.25 2016/09/16 14:23:13 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1038,8 +1038,10 @@ static apr_status_t load_header_strings(request_rec *r,
 
 
     if(dobj->disk_info.name_len > MAX_STRING_LEN ||
-            dobj->disk_info.bodyname_len > MAX_STRING_LEN ||
-            dobj->disk_info.filename_len > MAX_STRING_LEN) 
+       dobj->disk_info.name_len == 0 ||
+       dobj->disk_info.bodyname_len > MAX_STRING_LEN ||
+       dobj->disk_info.bodyname_len == 0 ||
+       dobj->disk_info.filename_len > MAX_STRING_LEN) 
     {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                 "Corrupt cache header for URL %s, deleting: %s",
@@ -1049,9 +1051,6 @@ static apr_status_t load_header_strings(request_rec *r,
 
         return CACHE_EDECLINED;
     }
-
-    /* FIXME: Enforce that url and bodyname is present */
-
 
     len = dobj->disk_info.name_len;
     urlbuff = apr_palloc(dobj->tpool, len+1);
