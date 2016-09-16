@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.21 2016/09/16 13:19:26 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.22 2016/09/16 13:52:38 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2314,23 +2314,11 @@ static apr_status_t store_disk_header(cache_handle_t *h, request_rec *r,
     iov[niov].iov_base = (void*)dobj->name;
     iov[niov++].iov_len = disk_info.name_len;
 
-    /* FIXME: Isn't this wrong?
-              - What happens if a HEAD request triggers rewriting
-                the headers?
-              - Shouldn't we require both non-header_only and a bodyinode?
-              - And isn't it the bodyname we should require instead of bodyinode?
-     */
-    if(dobj->initial_size > 0 && (!dobj->header_only || dobj->bodyinode != 0)) 
-    {
-        /* We know the bodyfile is root/bodyname ... */
-        char *bodyname = (char *) dobj->bodyfile + dobj->root_len + 1;
-        disk_info.bodyname_len = strlen(bodyname);
-        iov[niov].iov_base = (void*)bodyname;
-        iov[niov++].iov_len = disk_info.bodyname_len;
-    }
-    else {
-        disk_info.bodyname_len = 0;
-    }
+    /* We know the bodyfile is root/bodyname ... */
+    char *bodyname = (char *) dobj->bodyfile + dobj->root_len + 1;
+    disk_info.bodyname_len = strlen(bodyname);
+    iov[niov].iov_base = (void*)bodyname;
+    iov[niov++].iov_len = disk_info.bodyname_len;
 
     if(r->filename != NULL && strlen(r->filename) > 0) {
         disk_info.filename_len = strlen(r->filename);
