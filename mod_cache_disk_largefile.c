@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.25 2016/09/16 14:23:13 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.26 2016/09/16 14:30:31 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -723,10 +723,12 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
                       "finfo.valid: %x "
                       "finfo.protection: %x "
                       "finfo.fname: %s "
-                      "len: %" APR_OFF_T_FMT,
+                      "len: %" APR_OFF_T_FMT " "
+                      "pools:  r: %pp  conn: %pp  bb->p: %pp",
                       r->filename, r->finfo.filetype, r->finfo.valid, 
                       r->finfo.protection, 
-                      r->finfo.fname?r->finfo.fname:"NULL", len);
+                      r->finfo.fname?r->finfo.fname:"NULL", len,
+                      r->pool, r->connection->pool, bb->p);
         if (APLOGrtrace2(r)) {
             debug_rlog_brigade(APLOG_MARK, APLOG_TRACE2, 0, r, bb, 
                                "create_entity bb");
@@ -1244,19 +1246,9 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
         return APR_EBADF;
     }
 
-    if(finalsize < 0 || finfo->size != finalsize) {
-        /* Only mtime on destfile shows us having timed out, but for
-           files with unknown final size we accept files with matching
-           last-modified. */
-        if(now - finfo->mtime > updtimeout
-                && 
-                (
-                 finalsize >= 0
-                 ||
-                 apr_time_sec(finfo->mtime) != apr_time_sec(lastmod)
-                ) 
-          )
-        {
+    if(finfo->size != finalsize) {
+        /* mtime on destfile shows us having timed out */
+        if(now - finfo->mtime > updtimeout) {
             if (APLOGtrace2(ap_server_conf)) {
                     ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, 
                                  ap_server_conf,
@@ -1271,6 +1263,18 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
                                  now-finfo->mtime, updtimeout);
             }
             return APR_ETIMEDOUT;
+        }
+           
+        /* If Last-Modified matches then we can deem it stale/corrupted, as
+           something has obviously gone wrong, somewhere... */
+        if(apr_time_sec(finfo->mtime) == apr_time_sec(lastmod) ) {
+            if (APLOGtrace2(ap_server_conf)) {
+                    ap_log_error(APLOG_MARK, APLOG_TRACE2, 0, 
+                                 ap_server_conf,
+                                 "check_dest_invalid: fd: %pp  "
+                                 "stale (lastmod matches but not size)", fd);
+            }
+            return APR_EGENERAL;
         }
     }
     else {
@@ -1577,7 +1581,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
                           "URL: %s - filetype %d "
                           "response_time %" APR_TIME_T_FMT " "
-                          "older than restart_time %" APR_TIME_T_FMT " "
+                          "older than restart_time %" APR_TIME_T_FMT
                           ", removed old object and returning DECLINED", 
                           key, dobj->disk_info.filetype,
                           info->response_time,
@@ -3196,7 +3200,16 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
        error in the core output filter for some reason. However, it does
        work to allocate the fd on the connection pool instead. To avoid
        collecting multiple fds on a connection, for example during keepalive,
-       we do this only when necessary */
+       we do this only when necessary.
+    
+       Update 2016-09: What's weirder still, if the access is deep enough in
+       the tree, for example /mirror/fedora/epel/6/SRPMS/ ,  the in->p pool
+       matches r->pool. However, this doesn't seem to mean that using r->pool
+       works for directory indexes. Latest workaround is to only use r->pool
+       for fd:s when we have an initial size ie. not dynamically generated
+       content. 
+     */
+#if 0 /* FIXME: debug more fdpool issues */
     if(r->pool == in->p) {
         if (APLOGrtrace4(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
@@ -3210,6 +3223,15 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                           "store_body: r->pool != in->p");
         }
         fdpool = r->connection->pool;
+    }
+#endif /* FIXME: debug more fdpool issues */
+
+    /* FIXME: debug more fdpool issues */
+    if(dobj->initial_size < 0) {
+        fdpool = r->connection->pool;
+    }
+    else {
+        fdpool = r->pool;
     }
 
     /* Only perform these actions when called the first time */
@@ -3238,6 +3260,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                    to store_headers */
                 int hdrskipstore = dobj->skipstore;
                 int bodyskipstore = FALSE;
+
+#if 0 /* FIXME: For directory indexes it seems that the bucket brigade has
+                mostly been generated before store_body() is called, so there
+                is little/no gain to reuse the stored body. So skip reusing
+                stored body when initial_size is unknown. */
 
                 /* Do skipstore (ie, reuse already cached body) if either:
                    - initial_size >= 0
@@ -3273,6 +3300,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     }
                 }
                 else {
+#endif /* FIXME: Don't reuse stored body when initial_size is unknown */
+                if(dobj->initial_size >= 0) {
                     bodyskipstore = TRUE;
 
                     if(dobj->bodyinode != firstfinfo.inode) {
@@ -3305,7 +3334,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 }
             }
 
-            /* Should only be open if skipstore active */
+            /* Should only be left open if skipstore active */
             if(!dobj->skipstore) {
                 apr_file_close(dobj->bfd_read);
                 dobj->bfd_read = NULL;
@@ -3737,14 +3766,29 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                      dobj->name, dobj->file_size);
 
         if(dobj->initial_size < 0) {
+            if(r->connection->aborted) {
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                             "Discarded object for URL %s "
+                             "because connection aborted before cache "
+                             "could process it", dobj->name);
+
+                dobj->errcleanflags |= ERRCLEAN_HEADER;
+                file_cache_errorcleanup(dobj, r);
+
+                return APR_EGENERAL;
+            }
+
             /* Update header information now that we know the size */
             dobj->initial_size = dobj->file_size;
             rv = store_headers(h, r, &(h->cache_obj->info));
             if(rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                             "Discarded body for URL %s "
+                             "Discarded object for URL %s "
                              "because store_headers failed",
                              dobj->name);
+
+                dobj->errcleanflags |= ERRCLEAN_HEADER;
+                file_cache_errorcleanup(dobj, r);
 
                 return rv;
             }
@@ -3787,6 +3831,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             return rv;
         }
     }
+
+    /* FIXME: Keep track of filesize even when in skipstore and 
+              compare with size of reused body when complete. If mismatch,
+              ensure that the defective stored body gets nuked so it doesn't
+              affect more users than necessary */
 
     dobj->errcleanflags &= ~ERRCLEAN_BODY;
 
