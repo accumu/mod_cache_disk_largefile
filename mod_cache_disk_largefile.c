@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.29 2016/09/26 13:39:15 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.30 2016/09/26 14:08:30 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3493,6 +3493,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                           APR_OFF_T_FMT, dobj->name, dobj->initial_size);
         }
     }
+
+    rv = APR_SUCCESS; /* Loop sets rv on error, assume success */
 
     while (!APR_BRIGADE_EMPTY(in))
     {
