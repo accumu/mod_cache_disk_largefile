@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.26 2016/09/16 14:30:31 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.27 2016/09/17 16:36:50 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3111,7 +3111,12 @@ static unsigned int brigade_single_seqfile(request_rec *r,
 static apr_status_t preallocate_file(request_rec *r, apr_file_t *fd, 
                                      apr_off_t size)
 {
-    apr_status_t rv;
+    apr_status_t rv = APR_SUCCESS;
+
+    /* Don't even try to allocate space for zero-sized files */
+    if(size <= 0) {
+        return APR_SUCCESS;
+    }
 
 #ifdef __linux
     int bfd_os;
