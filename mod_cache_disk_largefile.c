@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.27 2016/09/17 16:36:50 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.28 2016/09/26 12:13:24 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -695,9 +695,22 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
 
     /* we don't support caching of range requests (yet) */
     if (r->status == HTTP_PARTIAL_CONTENT) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "URL %s partial content response not cached",
-                     key);
+        if (APLOGrtrace1(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                         "URL %s partial content response not cached",
+                         key);
+        }
+        return DECLINED;
+    }
+
+    /* Just ignore subrequests. They usually originate from content
+       generators like mod_autoindex anyway */
+    if (r->main != NULL) {
+        if (APLOGrtrace1(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                         "URL %s not cached, subrequest", key);
+        }
+
         return DECLINED;
     }
 
@@ -710,29 +723,30 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
        the update timeout. */
     /* FIXME: Make this configureable? */
     if(r->header_only) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "URL %s not cached, header_only request", key);
+        if (APLOGrtrace1(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                         "URL %s not cached, header_only request", key);
+        }
 
         return DECLINED;
     }
 
-    if (APLOGrtrace1(r)) {
-        ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                      "create_entity called. r->filename: %s "
+    if (APLOGrtrace2(r)) {
+        ap_log_rerror(APLOG_MARK, APLOG_TRACE2, 0, r,
+                      "create_entity called. URL: %s  r->filename: %s "
                       "finfo.filetype: %d "
                       "finfo.valid: %x "
                       "finfo.protection: %x "
                       "finfo.fname: %s "
                       "len: %" APR_OFF_T_FMT " "
+                      "r->main: %pp "
                       "pools:  r: %pp  conn: %pp  bb->p: %pp",
-                      r->filename, r->finfo.filetype, r->finfo.valid, 
+                      key, r->filename, r->finfo.filetype, r->finfo.valid, 
                       r->finfo.protection, 
-                      r->finfo.fname?r->finfo.fname:"NULL", len,
+                      r->finfo.fname?r->finfo.fname:"NULL", len, r->main,
                       r->pool, r->connection->pool, bb->p);
-        if (APLOGrtrace2(r)) {
-            debug_rlog_brigade(APLOG_MARK, APLOG_TRACE2, 0, r, bb, 
-                               "create_entity bb");
-        }
+        debug_rlog_brigade(APLOG_MARK, APLOG_TRACE2, 0, r, bb, 
+                           "create_entity bb");
     }
 
     /* Would really like to avoid caching of objects without
@@ -743,9 +757,11 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
      */
     /* FIXME: It would make sense to make this configureable */
     if(r->finfo.filetype != APR_REG && r->finfo.filetype != APR_DIR) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                     "URL %s not cached, not file/directory (filetype: %d)",
-                     key, r->finfo.filetype);
+        if (APLOGrtrace1(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                         "URL %s not cached, not file/directory (filetype: %d)",
+                         key, r->finfo.filetype);
+        }
         return DECLINED;
     }
 
@@ -1486,6 +1502,17 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
     h->cache_obj = NULL;
 
+    /* Just ignore subrequests. They usually originate from content
+       generators like mod_autoindex anyway */
+    if (r->main != NULL) {
+        if(APLOGrtrace1(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
+                         "open_entity: Ignoring subrequest URL %s", key);
+        }
+
+        return DECLINED;
+    }
+
     /* Look up entity keyed to 'url' */
     if (conf->cache_root == NULL) {
         if (!error_logged) {
@@ -1499,7 +1526,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
     if(APLOGrtrace3(r)) {
         ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r, "Called open_entity.  "
-                      "URL: %s", key);
+                      "URL: %s  r->main: %pp", key, r->main);
     }
 
 
