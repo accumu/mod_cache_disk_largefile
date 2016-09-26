@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.28 2016/09/26 12:13:24 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.29 2016/09/26 13:39:15 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -3293,46 +3293,6 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 int hdrskipstore = dobj->skipstore;
                 int bodyskipstore = FALSE;
 
-#if 0 /* FIXME: For directory indexes it seems that the bucket brigade has
-                mostly been generated before store_body() is called, so there
-                is little/no gain to reuse the stored body. So skip reusing
-                stored body when initial_size is unknown. */
-
-                /* Do skipstore (ie, reuse already cached body) if either:
-                   - initial_size >= 0
-                   - initial_size < 0 AND mtime == Last-Modified. This ensures
-                     that we know the final size.
-                 */
-                if(dobj->initial_size < 0) {
-                    if(dobj->lastmod != APR_DATE_BAD
-                            &&
-                            apr_time_sec(dobj->lastmod) 
-                            ==
-                            apr_time_sec(firstfinfo.mtime)) 
-                    {
-                        dobj->initial_size = firstfinfo.size;
-                        dobj->file_size = firstfinfo.size;
-
-                        if(!hdrskipstore) {
-                            /* Update header information with known size only
-                               if initial call to store_headers didn't set
-                               skipstore
-                             */
-                            needhdrupdate = TRUE;
-                        }
-                        bodyskipstore = TRUE;
-
-                        if (APLOGrtrace4(r)) {
-                            ap_log_rerror(APLOG_MARK, APLOG_TRACE4, rv, r,
-                                          "store_body: skipstore, "
-                                          "initial_size updated to"
-                                          " %" APR_OFF_T_FMT " from "
-                                          "cached body", dobj->initial_size);
-                        }
-                    }
-                }
-                else {
-#endif /* FIXME: Don't reuse stored body when initial_size is unknown */
                 if(dobj->initial_size >= 0) {
                     bodyskipstore = TRUE;
 
