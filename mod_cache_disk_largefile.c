@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.30 2016/09/26 14:08:30 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.31 2016/09/26 14:12:29 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1417,14 +1417,14 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
             if(rc != APR_SUCCESS) {
                 if(info->response_time < (apr_time_now() - conf->updtimeout) ) {
                     if(passes <= 1) {
-                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                        ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                                      "No bodyfile %s for URL %s - "
                                      "likely not cached due to "
                                      "HEAD request",
                                      dobj->bodyfile, dobj->name);
                     }
                     else {
-                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rc, r,
+                        ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                                      "Timed out waiting for bodyfile "
                                      "%s for URL %s - caching failed?", 
                                      dobj->bodyfile, dobj->name);
@@ -1465,6 +1465,12 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
         else if(rc != APR_SUCCESS) {
             /* Force revalidation for all other discrepancies */
             apr_file_remove(dobj->hdrsfile, r->pool);
+
+            ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
+                         "open_body_timeout: URL %s body %s not in sync with "
+                         "header %s, forcing revalidation",
+                         dobj->name, dobj->bodyfile, dobj->hdrsfile);
+
             return CACHE_EDECLINED;
         }
 
@@ -2025,7 +2031,17 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
         *(dobj->rfilename) = dobj->filename;
     }
 
-    if(!dobj->header_only) {
+    if(dobj->header_only) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
+                     "recall_body: No data inserted, header_only. URL %s",
+                     dobj->name);
+    }
+    else if(dobj->initial_size == 0) {
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
+                     "recall_body: No data inserted, 0-size body. URL %s",
+                     dobj->name);
+    }
+    else {
         /* Insert as much as possible as regular file (ie. sendfile():able) */
         /* We need to make sure to skip the beginning of the file if we've
            already sent some bytes, e.g., due to mod_proxy */
@@ -2054,11 +2070,6 @@ static apr_status_t recall_body(cache_handle_t *h, apr_pool_t *p, apr_bucket_bri
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
                      "recall_body: Succeeded for URL %s from file %s",
                      dobj->name, dobj->bodyfile);
-    }
-    else {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, ap_server_conf,
-                     "recall_body: No data inserted, header_only. URL %s",
-                     dobj->name);
     }
 
     e = apr_bucket_eos_create(bb->bucket_alloc);
@@ -2549,6 +2560,16 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
     } 
 
+    if(r->header_only && (dobj->initial_size < 0 || dobj->bodyinode == 0)) {
+        if (APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                          "store_headers: URL: %s  header_only rewrite but "
+                          "missing body size/inode",
+                          dobj->name);
+        }
+        dobj->skipstore = TRUE;
+    }
+
     if(!dobj->skipstore) {
         if(rewriting) {
             apr_off_t off=0;
@@ -2576,16 +2597,6 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         }
     }
 
-    if(r->header_only && (dobj->initial_size < 0 || dobj->bodyinode == 0)) {
-        if (APLOGrtrace3(r)) {
-            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                          "store_headers: URL: %s  header_only rewrite but "
-                          "missing body size/inode",
-                          dobj->name);
-        }
-        dobj->skipstore = TRUE;
-    }
-
     if(dobj->skipstore) {
         if(dobj->hfd) {
             apr_file_close(dobj->hfd);
@@ -2604,9 +2615,13 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         return rv;
     }
 
-    /* If the body size or inode is unknown, the header file will be rewritten
-       later so we can't close it */
-    if(dobj->initial_size >= 0 && dobj->bodyinode != 0) {
+    /* This is the final store if either:
+       - body size is zero, no body file created/stored for 0-sized objects
+       - body has a size and the body inode is known
+     */
+    if(dobj->initial_size == 0 
+            || (dobj->initial_size > 0 && dobj->bodyinode != 0)) 
+    {
         rv = apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
         if(rv != APR_SUCCESS) {
