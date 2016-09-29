@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.31 2016/09/26 14:12:29 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.32 2016/09/28 12:22:16 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2792,6 +2792,8 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
                 rc = check_dest_invalid(destfd, NULL, now, updtimeout,
                                           destfinalsize, 0, APR_DATE_BAD);
                 if(rc != APR_SUCCESS) {
+                    ap_log_error(APLOG_MARK, APLOG_WARNING, rc, ap_server_conf,
+                                 "copy_file_region: check_dest_invalid (1)");
                     return rc;
                 }
                 lastcheck = now;
@@ -2817,6 +2819,8 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
 
         rc = apr_file_write_full(destfd, buf, size, NULL);
         if(rc != APR_SUCCESS) {
+            ap_log_error(APLOG_MARK, APLOG_WARNING, rc, ap_server_conf,
+                         "copy_file_region: apr_file_write_full");
             return rc;
         }
         len -= size;
@@ -2829,6 +2833,9 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
             if(sync_file_range(destfd_os, flushoff, destoff_os - flushoff,
                             SYNC_FILE_RANGE_WRITE) != 0)
             {
+                ap_log_error(APLOG_MARK, APLOG_WARNING, 
+                             APR_FROM_OS_ERROR(errno), ap_server_conf,
+                             "copy_file_region: sync_file_range (1)");
                 return(APR_FROM_OS_ERROR(errno));
             }
             if (APLOGtrace4(ap_server_conf)) {
@@ -2848,6 +2855,9 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
                                    SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER) 
                                    != 0)
                 {
+                    ap_log_error(APLOG_MARK, APLOG_WARNING, 
+                                 APR_FROM_OS_ERROR(errno), ap_server_conf,
+                                 "copy_file_region: sync_file_range (2)");
                     return(APR_FROM_OS_ERROR(errno));
                 }
                 if (APLOGtrace4(ap_server_conf)) {
@@ -2869,6 +2879,8 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
     rc = check_dest_invalid(destfd, NULL, apr_time_now(), updtimeout,
                               destfinalsize, 0, APR_DATE_BAD);
     if(rc != APR_SUCCESS) {
+        ap_log_error(APLOG_MARK, APLOG_WARNING, rc, ap_server_conf,
+                     "copy_file_region: check_dest_invalid (2)");
         return rc;
     }
 
@@ -2880,6 +2892,8 @@ static apr_status_t copy_file_region(char *buf, const apr_size_t bufsize,
     rc = apr_file_info_get(&finfo, APR_FINFO_MTIME, srcfd);
     if(rc == APR_SUCCESS) {
         if(starttime < finfo.mtime) {
+            ap_log_error(APLOG_MARK, APLOG_WARNING, rc, ap_server_conf,
+                         "copy_file_region: starttime < finfo.mtime");
             rc = APR_EGENERAL;
         }
     }
