@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.32 2016/09/28 12:22:16 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.33 2016/09/29 11:06:12 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -2622,12 +2622,19 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     if(dobj->initial_size == 0 
             || (dobj->initial_size > 0 && dobj->bodyinode != 0)) 
     {
+        if (APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                          "store_headers: final store URL: %s",
+                          dobj->name);
+        }
+
         rv = apr_file_close(dobj->hfd);
         dobj->hfd = NULL;
         if(rv != APR_SUCCESS) {
             file_cache_errorcleanup(dobj, r);
             return rv;
         }
+        dobj->errcleanflags &= ~ERRCLEAN_HEADER;
     }
 
     if (APLOGrtrace1(r)) {
@@ -2642,8 +2649,6 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                      "Stored headers for URL %s",  dobj->name);
     }
-
-    dobj->errcleanflags &= ~ERRCLEAN_HEADER;
 
     return APR_SUCCESS;
 }
@@ -3255,6 +3260,16 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         return APR_SUCCESS;
     }
 
+    if(dobj->store_body_called && dobj->skipstore) {
+        /* Just bypass when continuing skipstore */
+        APR_BRIGADE_CONCAT(out, in);
+        if (APLOGrtrace3(r)) {
+            ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
+                          "store_body: skipstore, bypassing");
+        }
+        return APR_SUCCESS;
+    }
+
     /* This is is plain weird. In some cases, for example a dir index, the
        first call to store_body() has a different in->p pool. When this is
        the case, allocating fd:s from r->pool yields a Bad File Descriptor
@@ -3304,62 +3319,68 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                           "store_body: first call");
         }
 
-        rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, readflags, 
-                           0, fdpool);
+        /* FIXME: This smells like code duplication with what's done later on
+                  in this function? */
+        /* Can only expect to succeed in opening a cached body for files
+           with a size ... */
+        if(dobj->initial_size > 0) {
+            rv = apr_file_open(&dobj->bfd_read, dobj->bodyfile, readflags, 
+                               0, fdpool);
 
-        if(rv == APR_SUCCESS) {
-            apr_finfo_t firstfinfo;
-            rv = check_dest_invalid(dobj->bfd_read, &firstfinfo,
-                                      apr_time_now(), conf->updtimeout,
-                                      dobj->initial_size, 0,
-                                      dobj->lastmod);
             if(rv == APR_SUCCESS) {
-                /* Assume it's a valid cached bodyfile, either being cached
-                   or fully cached */
-                int needhdrupdate = FALSE;
-                /* skipstore can also be set by the first call
-                   to store_headers */
-                int hdrskipstore = dobj->skipstore;
-                int bodyskipstore = FALSE;
+                apr_finfo_t firstfinfo;
+                rv = check_dest_invalid(dobj->bfd_read, &firstfinfo,
+                                          apr_time_now(), conf->updtimeout,
+                                          dobj->initial_size, 0,
+                                          dobj->lastmod);
+                if(rv == APR_SUCCESS) {
+                    /* Assume it's a valid cached bodyfile, either being cached
+                       or fully cached */
+                    int needhdrupdate = FALSE;
+                    /* skipstore can also be set by the first call
+                       to store_headers */
+                    int hdrskipstore = dobj->skipstore;
+                    int bodyskipstore = FALSE;
 
-                if(dobj->initial_size >= 0) {
-                    bodyskipstore = TRUE;
+                    if(dobj->initial_size >= 0) {
+                        bodyskipstore = TRUE;
 
-                    if(dobj->bodyinode != firstfinfo.inode) {
-                        if(!hdrskipstore) {
-                            dobj->bodyinode = firstfinfo.inode;
-                            needhdrupdate = TRUE;
+                        if(dobj->bodyinode != firstfinfo.inode) {
+                            if(!hdrskipstore) {
+                                dobj->bodyinode = firstfinfo.inode;
+                                needhdrupdate = TRUE;
+                            }
+                        }
+
+                        /* Note: File might still be written */
+                        dobj->file_size = firstfinfo.size;
+
+                        if (APLOGrtrace4(r)) {
+                            ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
+                                          "store_body: skipstore "
+                                          "(found cached body)");
                         }
                     }
-
-                    /* Note: File might still be written */
-                    dobj->file_size = firstfinfo.size;
-
-                    if (APLOGrtrace4(r)) {
-                        ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                                      "store_body: skipstore "
-                                      "(found cached body)");
+                    if(needhdrupdate) {
+                        rv = store_headers(h, r, &(h->cache_obj->info));
+                        if(rv != APR_SUCCESS) {
+                            ap_log_rerror(APLOG_MARK, APLOG_WARNING, rv, r,
+                                    "URL %s store_body store_headers failed"
+                                    , dobj->name);
+                            return rv;
+                        }
+                    }
+                    if(bodyskipstore) {
+                        dobj->skipstore = TRUE;
                     }
                 }
-                if(needhdrupdate) {
-                    rv = store_headers(h, r, &(h->cache_obj->info));
-                    if(rv != APR_SUCCESS) {
-                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, rv, r,
-                                "URL %s store_body store_headers failed"
-                                , dobj->name);
-                        return rv;
-                    }
-                }
-                if(bodyskipstore) {
-                    dobj->skipstore = TRUE;
+                /* Should only be left open if skipstore active */
+                if(!dobj->skipstore) {
+                    apr_file_close(dobj->bfd_read);
+                    dobj->bfd_read = NULL;
                 }
             }
 
-            /* Should only be left open if skipstore active */
-            if(!dobj->skipstore) {
-                apr_file_close(dobj->bfd_read);
-                dobj->bfd_read = NULL;
-            }
         }
 
         if(!dobj->skipstore) {
@@ -3474,7 +3495,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
             /* Can only expect to succeed in opening a cached body for files
                with a size ... */
-            if( dobj->initial_size > 0) {
+            if(dobj->initial_size > 0) {
 
                 /* If store_headers() sets skipstore, then we might not have
                    bfd_read opened here if it hadn't been created yet by
