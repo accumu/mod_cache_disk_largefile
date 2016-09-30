@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.33 2016/09/29 11:06:12 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.34 2016/09/30 13:30:05 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -697,8 +697,8 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     if (r->status == HTTP_PARTIAL_CONTENT) {
         if (APLOGrtrace1(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                         "URL %s partial content response not cached",
-                         key);
+                         "create_entity: partial content response not cached"
+                         "  URL %s", key);
         }
         return DECLINED;
     }
@@ -708,7 +708,7 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     if (r->main != NULL) {
         if (APLOGrtrace1(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                         "URL %s not cached, subrequest", key);
+                         "create_entity: not cached, subrequest  URL %s", key);
         }
 
         return DECLINED;
@@ -725,7 +725,8 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     if(r->header_only) {
         if (APLOGrtrace1(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                         "URL %s not cached, header_only request", key);
+                         "create_entity: not cached, header_only request"
+                         "  URL %s", key);
         }
 
         return DECLINED;
@@ -759,8 +760,9 @@ static int create_entity(cache_handle_t *h, request_rec *r, const char *key,
     if(r->finfo.filetype != APR_REG && r->finfo.filetype != APR_DIR) {
         if (APLOGrtrace1(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                         "URL %s not cached, not file/directory (filetype: %d)",
-                         key, r->finfo.filetype);
+                         "create_entity: not cached, not file/directory "
+                         "(filetype: %d)  URL %s",
+                         r->finfo.filetype, key);
         }
         return DECLINED;
     }
@@ -1418,19 +1420,17 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
                 if(info->response_time < (apr_time_now() - conf->updtimeout) ) {
                     if(passes <= 1) {
                         ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
-                                     "No bodyfile %s for URL %s - "
-                                     "likely not cached due to "
-                                     "HEAD request",
+                                     "No bodyfile %s for URL %s",
                                      dobj->bodyfile, dobj->name);
                     }
                     else {
                         ap_log_rerror(APLOG_MARK, APLOG_WARNING, rc, r,
                                      "Timed out waiting for bodyfile "
-                                     "%s for URL %s - caching failed?", 
+                                     "%s for URL %s", 
                                      dobj->bodyfile, dobj->name);
                     }
 
-                    return CACHE_EDECLINED;
+                    return rc;
                 }
 
                 apr_sleep(loopdelay);
@@ -1513,7 +1513,7 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
     if (r->main != NULL) {
         if(APLOGrtrace1(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                         "open_entity: Ignoring subrequest URL %s", key);
+                         "open_entity: Ignoring subrequest  URL %s", key);
         }
 
         return DECLINED;
@@ -1568,8 +1568,8 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
         if(APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
-                          "URL: %s - open_header_timeout failed, "
-                          "returning DECLINED", key);
+                          "open_header_timeout failed, "
+                          "returning DECLINED  URL %s", key);
         }
         return DECLINED;
     }
@@ -1594,8 +1594,8 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
         if(APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
-                          "URL: %s - load_header_strings failed, "
-                          "returning DECLINED", key);
+                          "load_header_strings failed, "
+                          "returning DECLINED  URL %s", key);
         }
         return DECLINED;
     }
@@ -1634,20 +1634,21 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
 
             if(APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r, "open_entity: "
-                              "URL: %s - no bodyfile, "
-                              "returning DECLINED", key);
+                              "no bodyfile, returning DECLINED  URL %s", key);
             }
                
             return DECLINED;
         }
         rc = open_body_timeout(r, obj, dobj);
         if(rc != APR_SUCCESS) {
+            /* Nuke header if we fail to open the matching body */
+            dobj->errcleanflags |= ERRCLEAN_HEADER;
             file_cache_errorcleanup(dobj, r);
 
             if(APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
-                              "URL: %s - open_body_timeout failed, "
-                              "returning DECLINED", key);
+                              "open_body_timeout failed, returning DECLINED"
+                              "  URL %s", key);
             }
             return DECLINED;
         }
@@ -1771,7 +1772,7 @@ static apr_status_t commit_entity(cache_handle_t *h, request_rec *r)
     if(dobj->tpool != NULL) {
         if (APLOGrtrace4(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                          "commit_entity: tpool cleanup");
+                          "commit_entity: tpool cleanup  URL %s", dobj->name);
         }
         dobj->tbuf = NULL;
         apr_pool_destroy(dobj->tpool);
@@ -2458,35 +2459,35 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         if(dobj->disk_info.file_size < 0) {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
+                              "store_headers: not current: "
                               "Header on disk indicating unknown size "
-                              "being cached" , dobj->name);
+                              "being cached  URL %s" , dobj->name);
             }
             hdrcurrent = FALSE;
         }
         else if(dobj->initial_size < 0) {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
+                              "store_headers: not current: "
                               "Unknown size, shouldn't really happen when"
-                              "rewriting...", dobj->name);
+                              "rewriting...  URL %s", dobj->name);
             }
             hdrcurrent = FALSE;
         }
         else if(dobj->initial_size != dobj->disk_info.file_size) {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
+                              "store_headers: not current: "
                               "This object and on-disk object size doesn't "
-                              "match", dobj->name);
+                              "match  URL %s", dobj->name);
             }
             hdrcurrent = FALSE;
         }
         else if(dobj->bodyinode != dobj->disk_info.bodyinode) {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
-                              "Body inode doesn't match on-disk header",
+                              "store_headers: not current: "
+                              "Body inode doesn't match on-disk header  URL %s",
                               dobj->name);
             }
             hdrcurrent = FALSE;
@@ -2496,24 +2497,26 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
-                               "Last-Modified does not match", dobj->name);
+                              "store_headers: not current: "
+                               "Last-Modified does not match  URL %s",
+                               dobj->name);
             }
             hdrcurrent = FALSE;
         }
         else if(dobj->disk_info.expire <= r->request_time) {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
-                              "On-disk headers expired", dobj->name);
+                              "store_headers: not current: "
+                              "On-disk headers expired  URL %s", 
+                              dobj->name);
             }
             hdrcurrent = FALSE;
         }
         else if(dobj->disk_info.date <= info->date - conf->updtimeout) {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
-                              "On-disk headers older than updtimeout",
+                              "store_headers: not current: "
+                              "On-disk headers older than updtimeout  URL %s",
                               dobj->name);
             }
             hdrcurrent = FALSE;
@@ -2521,8 +2524,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         else if(dobj->disk_info.bodyname_len == 0 && dobj->bodyfile != NULL) {
             if (APLOGrtrace3(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                              "store_headers: URL: %s  not current: "
-                              "On-disk headers missing bodyfile",
+                              "store_headers: not current: "
+                              "On-disk headers missing bodyfile  URL %s",
                               dobj->name);
             }
             hdrcurrent = FALSE;
@@ -2563,8 +2566,8 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     if(r->header_only && (dobj->initial_size < 0 || dobj->bodyinode == 0)) {
         if (APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                          "store_headers: URL: %s  header_only rewrite but "
-                          "missing body size/inode",
+                          "store_headers: header_only rewrite but "
+                          "missing body size/inode  URL %s",
                           dobj->name);
         }
         dobj->skipstore = TRUE;
@@ -2624,7 +2627,7 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
     {
         if (APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                          "store_headers: final store URL: %s",
+                          "store_headers: final store  URL: %s",
                           dobj->name);
         }
 
@@ -3255,7 +3258,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         APR_BRIGADE_CONCAT(out, in);
         if (APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                          "store_body: initial_size==0, bypassing");
+                          "store_body: initial_size==0, bypassing  URL %s",
+                          dobj->name);
         }
         return APR_SUCCESS;
     }
@@ -3265,7 +3269,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
         APR_BRIGADE_CONCAT(out, in);
         if (APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                          "store_body: skipstore, bypassing");
+                          "store_body: skipstore, bypassing  URL %s",
+                          dobj->name);
         }
         return APR_SUCCESS;
     }
@@ -3316,7 +3321,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
         if (APLOGrtrace4(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                          "store_body: first call");
+                          "store_body: first call  URL %s",
+                          dobj->name);
         }
 
         /* FIXME: This smells like code duplication with what's done later on
@@ -3358,15 +3364,16 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                         if (APLOGrtrace4(r)) {
                             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
                                           "store_body: skipstore "
-                                          "(found cached body)");
+                                          "(found cached body)  URL %s",
+                                          dobj->name);
                         }
                     }
                     if(needhdrupdate) {
                         rv = store_headers(h, r, &(h->cache_obj->info));
                         if(rv != APR_SUCCESS) {
                             ap_log_rerror(APLOG_MARK, APLOG_WARNING, rv, r,
-                                    "URL %s store_body store_headers failed"
-                                    , dobj->name);
+                                    "store_body: store_headers failed  URL %s",
+                                    dobj->name);
                             return rv;
                         }
                     }
@@ -3400,7 +3407,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
                 if (APLOGrtrace4(r)) {
                     ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                                  "store_body: skipstore (open_new_file)");
+                                  "store_body: skipstore (open_new_file)"
+                                  "  URL %s", dobj->name);
                 }
                 dobj->skipstore = TRUE;
 
@@ -3413,13 +3421,15 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                                   "store_body: skipstore (open_new_file): "
-                                  "failed to open bfd_read");
+                                  "failed to open bfd_read  URL %s",
+                                  dobj->name);
                 }
 
             }
             else if(rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                              "store_body: open_new_file failed");
+                              "store_body: open_new_file failed  URL %s",
+                              dobj->name);
 
                 dobj->errcleanflags |= ERRCLEAN_HEADER;
                 file_cache_errorcleanup(dobj, r);
@@ -3450,8 +3460,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     rv = store_headers(h, r, &(h->cache_obj->info));
                     if(rv != APR_SUCCESS) {
                         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                                "URL %s store_body store_headers failed"
-                                , dobj->name);
+                                "store_body: store_headers failed  URL %s",
+                                dobj->name);
 
                         file_cache_errorcleanup(dobj, r);
                         return rv;
@@ -3463,7 +3473,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
                 if(rv != APR_SUCCESS) {
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                            "Error opening bodyfile %s for URL %s",
+                            "store_body: Error opening bodyfile %s for URL %s",
                             dobj->bodyfile, dobj->name);
 
                     file_cache_errorcleanup(dobj, r);
@@ -3475,7 +3485,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                         && wfinfo.inode != rfinfo.inode) 
                 {
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, "store_body: "
-                                  "bfd_write and bfd_read inode mismatch");
+                                  "bfd_write and bfd_read inode mismatch"
+                                  "  URL %s", dobj->name);
                     file_cache_errorcleanup(dobj, r);
 
                     return APR_EBADF;
@@ -3503,16 +3514,17 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 if(!dobj->bfd_read || dobj->file_size == 0) {
                     if (APLOGrtrace4(r)) {
                         ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                                      "store_body: skipstore: wait for data "
-                                      "in body cache file");
+                                      "store_body: skipstore: waiting for data "
+                                      "in body cache file  URL %s",
+                                      dobj->name);
                     }
 
                     rv = open_body_timeout(r, h->cache_obj, dobj);
                     if( rv != APR_SUCCESS) {
                         ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                                "store_body: URL %s:  %s:  failed waiting "
-                                "for data in cached body file",
-                                dobj->name, dobj->bodyfile);
+                                "store_body: failed waiting for data in cached"
+                                " body file %s  URL %s",
+                                dobj->bodyfile, dobj->name);
 
                         return rv;
                     }
@@ -3531,7 +3543,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     dobj->body_done = TRUE;
                     if (APLOGrtrace4(r)) {
                         ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                                "store_body: body replaced");
+                                "store_body: body replaced  URL %s",
+                                dobj->name);
                     }
                 }
             }
@@ -3581,7 +3594,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             APR_BRIGADE_INSERT_TAIL(out, e);
             if (APLOGrtrace4(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                              "store_body: flush, returning");
+                              "store_body: flush, returning  URL %s",
+                              dobj->name);
             }
             return APR_SUCCESS;
         }
@@ -3611,7 +3625,7 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 rv = apr_file_dup(&srcfd, a->fd, dobj->tpool);
                 if(rv != APR_SUCCESS) {
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                            "store_body: URL %s: apr_file_dup failed",
+                            "store_body: apr_file_dup failed  URL %s",
                             dobj->name);
                     break;
                 }
@@ -3639,9 +3653,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                     /* Gracefully fall back to non-bgcopy */
                     dobj->can_copy_file = FALSE;
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                            "store_body: URL %s unable to initialize "
-                            "background copy, "
-                            "falling back to foreground copy",
+                            "store_body: unable to initialize background "
+                            "copy, falling back to foreground copy  URL %s",
                             dobj->name);
                 }
             }
@@ -3656,10 +3669,11 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 }
                 if (APLOGrtrace3(r)) {
                     ap_log_rerror(APLOG_MARK, APLOG_TRACE3, 0, r,
-                            "store_body: URL %s added diskcache out bucket "
+                            "store_body: added diskcache out bucket "
                             "start %" APR_OFF_T_FMT " "
-                            "length %" APR_OFF_T_FMT,
-                            dobj->name, e->start, e->length);
+                            "length %" APR_OFF_T_FMT
+                            "  URL %s",
+                            e->start, e->length, dobj->name);
                 }
                 apr_bucket_delete(e);
                 continue;
@@ -3675,7 +3689,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             rv = apr_bucket_split(e, CACHE_FADVISE_WINDOW);
             if(rv != APR_SUCCESS && !APR_STATUS_IS_ENOTIMPL(rv)) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, 
-                              "store_body: apr_bucket_split()");
+                              "store_body: apr_bucket_split()  URL %s",
+                              dobj->name);
                 break;
             }
         }
@@ -3697,7 +3712,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
                 if(dobj->tbuf == NULL && rv == APR_SUCCESS) {
                     rv = APR_ENOMEM;
                     ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, 
-                                  "store_body: apr_palloc()");
+                                  "store_body: apr_palloc()  URL %s",
+                                  dobj->name);
                     break;
                 }
             }
@@ -3709,7 +3725,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
             if(rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, 
-                              "store_body: copy_file_region()");
+                              "store_body: copy_file_region()  URL %s",
+                              dobj->name);
 
                 break;
             }
@@ -3720,7 +3737,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             rv = apr_bucket_read(e, &str, &length, APR_BLOCK_READ);
             if (rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, 
-                              "store_body: apr_bucket_read()");
+                              "store_body: apr_bucket_read()  URL %s",
+                              dobj->name);
                 break;
             }
             /* don't write empty buckets to the cache, we'll get those when
@@ -3734,7 +3752,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             rv = apr_file_write_full(dobj->bfd_write, str, length, &written);
             if (rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, 
-                              "store_body: apr_file_write_full()");
+                              "store_body: apr_file_write_full()  URL %s",
+                              dobj->name);
                 break;
             }
         }
@@ -3763,7 +3782,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             if(!fbout) {
                 rv = APR_ENOMEM;
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r, 
-                              "store_body: !fbout");
+                              "store_body: !fbout  URL %s",
+                              dobj->name);
 
                 break;
             }
@@ -3798,7 +3818,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
     if (!dobj->body_done) {
         if (APLOGrtrace4(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r,
-                          "store_body: !body_done, returning");
+                          "store_body: !body_done, returning  URL %s",
+                          dobj->name);
         }
         return APR_SUCCESS;
     }
@@ -3838,15 +3859,16 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             }
             if (APLOGrtrace1(r)) {
                 ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                              "store_body: final size: %" APR_OFF_T_FMT,
-                              dobj->file_size);
+                              "store_body: final size: %" APR_OFF_T_FMT
+                              "  URL %s", dobj->file_size, dobj->name);
             }
         }
         else if(dobj->initial_size != dobj->file_size) {
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                         "URL %s - body size mismatch: suggested %"
-                         APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")",
-                         dobj->name, dobj->initial_size, dobj->file_size);
+                         "store_body: body size mismatch: suggested %"
+                         APR_OFF_T_FMT "  file_size %" APR_OFF_T_FMT ")"
+                         "  URL %s",
+                         dobj->initial_size, dobj->file_size, dobj->name);
             dobj->errcleanflags |= ERRCLEAN_HEADER;
             file_cache_errorcleanup(dobj, r);
 
@@ -3858,7 +3880,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
             rv = apr_file_mtime_set(dobj->bodyfile, dobj->lastmod, dobj->tpool);
             if(rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
-                        "store_body: set mtime failed on %s", dobj->bodyfile);
+                        "store_body: set mtime failed on %s  URL %s",
+                        dobj->bodyfile, dobj->name);
             }
         }
 
@@ -3885,7 +3908,8 @@ static apr_status_t store_body(cache_handle_t *h, request_rec *r,
 
     if (APLOGrtrace1(r)) {
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r,
-                      "store_body: All done, returning SUCCESS");
+                      "store_body: All done, returning SUCCESS  URL %s",
+                      dobj->name);
     }
     return APR_SUCCESS;
 }
