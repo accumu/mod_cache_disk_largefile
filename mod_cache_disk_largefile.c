@@ -75,7 +75,7 @@
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
 static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.34 2016/09/30 13:30:05 source Exp source $";
+        "$Id: mod_cache_disk_largefile.c,v 2.35 2016/09/30 14:34:28 source Exp source $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -1202,11 +1202,12 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
                 "Called check_dest_invalid.  fd: %pp  "
                 "finfo: %pp  "
                 "now: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
-                "updtimeout: %" APR_TIME_T_FMT "  "
+                "updtimeout: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
                 "finalsize: %" APR_OFF_T_FMT "  "
                 "inode: %" APR_UINT64_T_HEX_FMT "  "
                 "lastmod: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT,
-                fd, finfo, apr_time_sec(now), apr_time_usec(now), updtimeout,
+                fd, finfo, apr_time_sec(now), apr_time_usec(now), 
+                apr_time_sec(updtimeout), apr_time_usec(updtimeout),
                 finalsize, uinode, 
                 apr_time_sec(lastmod), apr_time_usec(lastmod));
     }
@@ -1273,12 +1274,15 @@ static apr_status_t check_dest_invalid(apr_file_t *fd, apr_finfo_t *finfo,
                                  "check_dest_invalid: fd: %pp  "
                                  "stale (lastmod "
                                  "%" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT
-                                 " age %" APR_TIME_T_FMT 
-                                 " > updtimeout %" APR_TIME_T_FMT ")",
+                                 " age %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT
+                                 " > updtimeout %" 
+                                 APR_TIME_T_FMT ".%06" APR_TIME_T_FMT")",
                                  fd, 
-                                 apr_time_sec(lastmod),
-                                 apr_time_usec(lastmod),
-                                 now-finfo->mtime, updtimeout);
+                                 apr_time_sec(lastmod), apr_time_usec(lastmod),
+                                 apr_time_sec(now-finfo->mtime), 
+                                 apr_time_usec(now-finfo->mtime),
+                                 apr_time_sec(updtimeout), 
+                                 apr_time_usec(updtimeout));
             }
             return APR_ETIMEDOUT;
         }
@@ -1400,12 +1404,13 @@ static apr_status_t open_body_timeout(request_rec *r, cache_object_t *cache_obj,
                 "bfd_read: %pp  "
                 "response_time: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
                 "now: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
-                "updtimeout: %" APR_TIME_T_FMT,
+                "updtimeout: %" APR_TIME_T_FMT ".%06" APR_TIME_T_FMT,
                 dobj->name, dobj->bfd_read,
                 apr_time_sec(info->response_time),
                 apr_time_usec(info->response_time),
                 apr_time_sec(now), apr_time_usec(now),
-                conf->updtimeout);
+                apr_time_sec(conf->updtimeout), 
+                apr_time_usec(conf->updtimeout));
     }
 
     /* Wait here until we get a body cachefile, data in it, and do quick sanity
@@ -1613,12 +1618,16 @@ static int open_entity(cache_handle_t *h, request_rec *r, const char *key)
         if(APLOGrtrace3(r)) {
             ap_log_rerror(APLOG_MARK, APLOG_TRACE3, rc, r, "open_entity: "
                           "URL: %s - filetype %d "
-                          "response_time %" APR_TIME_T_FMT " "
-                          "older than restart_time %" APR_TIME_T_FMT
+                          "response_time %" 
+                          APR_TIME_T_FMT ".%06" APR_TIME_T_FMT " "
+                          "older than restart_time %" 
+                          APR_TIME_T_FMT ".%06" APR_TIME_T_FMT
                           ", removed old object and returning DECLINED", 
                           key, dobj->disk_info.filetype,
-                          info->response_time,
-                          ap_scoreboard_image->global->restart_time);
+                          apr_time_sec(info->response_time),
+                          apr_time_usec(info->response_time),
+                          apr_time_sec(ap_scoreboard_image->global->restart_time),
+                          apr_time_usec(ap_scoreboard_image->global->restart_time));
         }
         return DECLINED;
     }
@@ -2434,21 +2443,37 @@ static apr_status_t store_headers(cache_handle_t *h, request_rec *r,
         ap_log_rerror(APLOG_MARK, APLOG_TRACE1, 0, r, "Called store_headers.  "
                       "URL: %s  "
                       "dobj->skipstore: %d  "
-                      "dobj->lastmod: %" APR_TIME_T_FMT "  "
-                      "disk_info.lastmod: %" APR_TIME_T_FMT "  "
+                      "dobj->lastmod: %" 
+                      APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
+                      "disk_info.lastmod: %" 
+                      APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
                       "dobj->initial_size: %" APR_OFF_T_FMT "  "
                       "disk_info.file_size: %" APR_OFF_T_FMT "  "
-                      "request_time: %" APR_OFF_T_FMT "  "
-                      "disk_info.expire: %" APR_OFF_T_FMT "  "
-                      "info->date: %" APR_OFF_T_FMT "  "
-                      "disk_info.date: %" APR_OFF_T_FMT "  "
+                      "request_time: %" 
+                      APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
+                      "disk_info.expire: %" 
+                      APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
+                      "info->date: %" 
+                      APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
+                      "disk_info.date: %" 
+                      APR_TIME_T_FMT ".%06" APR_TIME_T_FMT "  "
                       "dobj->bodyinode: %" APR_UINT64_T_FMT "  "
                       "disk_info.bodyinode: %" APR_UINT64_T_FMT
                       , dobj->name, dobj->skipstore, 
-                      dobj->lastmod, dobj->disk_info.lastmod,
+                      apr_time_sec(dobj->lastmod), 
+                      apr_time_usec(dobj->lastmod), 
+                      apr_time_sec(dobj->disk_info.lastmod),
+                      apr_time_usec(dobj->disk_info.lastmod),
                       dobj->initial_size, dobj->disk_info.file_size,
-                      r->request_time, dobj->disk_info.expire,
-                      info->date, dobj->disk_info.date, dobj_bodyinode,
+                      apr_time_sec(r->request_time), 
+                      apr_time_usec(r->request_time), 
+                      apr_time_sec(dobj->disk_info.expire),
+                      apr_time_usec(dobj->disk_info.expire),
+                      apr_time_sec(info->date), 
+                      apr_time_usec(info->date), 
+                      apr_time_sec(dobj->disk_info.date), 
+                      apr_time_usec(dobj->disk_info.date), 
+                      dobj_bodyinode,
                       diskinfo_bodyinode);
     }
 
