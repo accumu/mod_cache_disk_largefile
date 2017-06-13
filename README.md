@@ -23,14 +23,13 @@ http://urn.kb.se/resolve?urn=urn:nbn:se:umu:diva-109779
 
 # Building
 
-Create Makefile with:
+`apxs -c mod_cache_disk_largefile.c`
 
-`apxs -n cache_disk_largefile -g`
+# Installation
 
-Edit paths etc to adapt as appropriate.
+`apxs -i mod_cache_disk_largefile.la`
 
-make
-make install
+For adding a config entry add `-a` or `-A` as appropriate.
 
 # Setup/config
 
