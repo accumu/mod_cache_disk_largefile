@@ -2253,6 +2253,10 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
     /* We should always write the vary format hints to the original header
      * path, otherwise they will never be refreshed.  */
 
+    /* FIXME: ONLY store/update vary header if needed! There is no need
+              to store it on every access !!!
+     */
+
     vfile = dobj->hdrsfile;
 
     flags = APR_FOPEN_CREATE | APR_FOPEN_WRITE | APR_FOPEN_BINARY 
@@ -2301,6 +2305,12 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
 
     dobj->tempfile = apr_pstrcat(r->pool, conf->cache_root, AP_TEMPFILE, NULL);
 
+    /* FIXME: This prefix-thing is silly, it creates lots of directory trees
+              with just a few files in them, leading to a nice inode explosion.
+              Instead add on to the URL and hash it into the structure with
+              everything else.
+     */
+
     if(dobj->prefix == NULL) {
         const char *tmp = regen_key(r->pool, r->headers_in, varray, dobj->name);
         char *p;
@@ -2313,6 +2323,11 @@ static apr_status_t store_vary_header(cache_handle_t *h, disk_cache_conf *conf,
         }
         dobj->hdrsfile = cache_file(r->pool, conf, dobj->prefix, tmp, 
                                     CACHE_HEADER_SUFFIX);
+
+        /* FIXME: This unconditionally stores a duplicate body. If a static
+                  file it should just use dev:ino or r->filename
+                  as in create_entity. Or just leave it as is as it's
+                  already set up correctly? */
         dobj->bodyfile = cache_file(r->pool, conf, dobj->prefix, tmp, 
                                     CACHE_BODY_SUFFIX);
     }
