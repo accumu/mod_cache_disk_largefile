@@ -1,0 +1,9 @@
+*.swp
+*.o
+*.lo
+*.slo
+*.la
+.libs
+.deps
+Makefile
+modules.mk
