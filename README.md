@@ -15,7 +15,8 @@ performance by delivering the file from cache while still caching.
 
 To leverage the cache for other protocols a wrapper library called
 libhttpcacheopen has been developed that enables for example rsync and vsftp
-to leverage the cache as well.
+to leverage the cache as well. It's available at
+https://github.com/accumu/libhttpcacheopen
 
 This work eventually became a part of the Master's thesis *Scaling a Content
 Delivery system for Open Source Software*, available at
