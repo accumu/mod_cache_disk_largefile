@@ -23,6 +23,11 @@ http://urn.kb.se/resolve?urn=urn:nbn:se:umu:diva-109779
 
 # Building
 
+Once upon a time built and used on AIX, Solaris and Linux.
+
+Recently only built and used on Ubuntu Linux 64bit flavours, at the
+time of this writing Ubuntu 14.04 LTS and older.
+
 `apxs -c mod_cache_disk_largefile.c`
 
 # Installation
