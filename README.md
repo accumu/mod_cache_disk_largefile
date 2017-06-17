@@ -56,5 +56,5 @@ You need:
 
 The cache module assumes that you have arranged for deletion of old data
 from the cache. This can be done in a number of ways, we are using an
-in-house script called cleanbyage that looks at atime to figure out what
-to clean.
+in-house script called [cleanbyage](/accumu/cleanbyage) that looks at atime to
+figure out what to clean.
