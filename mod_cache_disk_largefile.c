@@ -14,6 +14,12 @@
  * limitations under the License.
  */
 
+/* Originated as patches against Apache HTTPD 2.2 mod_disk_cache but quickly
+ * diverged enough to be deemed not applicable for merging upstream.
+ * Eventually broken out as the stand-alone module mod_cache_disk_largefile
+ * in 2012.
+ */
+
 #include "apr_lib.h"
 #include "apr_file_io.h"
 #include "apr_strings.h"
