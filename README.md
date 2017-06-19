@@ -29,7 +29,7 @@ Once upon a time built and used on AIX, Solaris and Linux.
 Recently only built and used on Ubuntu Linux 64bit flavours, at the
 time of this writing Ubuntu 14.04 LTS and older.
 
-`apxs -c mod_cache_disk_largefile.c`
+`apxs -c -D GIT_SOURCE_DESC='\"'`git describe --tags --always --dirty`'\"' mod_cache_disk_largefile.c`
 
 # Installation
 

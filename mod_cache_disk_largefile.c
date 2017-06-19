@@ -80,8 +80,10 @@
 
 module AP_MODULE_DECLARE_DATA cache_disk_largefile_module;
 
-static const char rcsid[] = /* Add RCS version string to binary */
-        "$Id: mod_cache_disk_largefile.c,v 2.35 2016/09/30 14:34:28 source Exp source $";
+/* Emulate RCS $Id$, simply because it's handy to be able to run ident
+   on an executable/library/etc and see the version.
+ */
+static const char rcsid[] = "$Id: " __FILE__ " " GIT_SOURCE_DESC " $";
 
 /* Forward declarations */
 static int remove_entity(cache_handle_t *h);
@@ -4039,6 +4041,10 @@ static int post_config(apr_pool_t *p, apr_pool_t *plog, apr_pool_t *ptemp,
 {
     int threaded_mpm;
 
+    /* Use rcsid here so the string isn't optimized away, the main goal
+       is to be able to run ident on a binary module to identify the
+       version!
+     */
     ap_log_error(APLOG_MARK, APLOG_NOTICE, 0, s, "post_config: %s started.",
                    rcsid);
 
