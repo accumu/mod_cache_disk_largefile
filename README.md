@@ -1,9 +1,9 @@
 # Introduction
 
-Large-file optimized cache module for Apache httpd, http://httpd.apache.org/
+Large-file optimized cache module for Apache httpd, https://httpd.apache.org/
 
-Developed to meet the needs of http://ftp.acc.umu.se/ - the file archive of
-Academic Computer Club (ACC), Umeå University, Sweden. The archive hosts
+Developed to meet the needs of https://mirror.accum.se/ - the file archive of
+Academic Computer Club (ACC), Umeå, Sweden. The archive hosts
 all kinds of Open Source software ranging from small archive files to
 large DVD images.
 
@@ -20,7 +20,7 @@ https://github.com/accumu/libhttpcacheopen
 
 This work eventually became a part of the Master's thesis *Scaling a Content
 Delivery system for Open Source Software*, available at
-http://urn.kb.se/resolve?urn=urn:nbn:se:umu:diva-109779
+https://urn.kb.se/resolve?urn=urn:nbn:se:umu:diva-109779
 
 # Building
 
